@@ -99,6 +99,41 @@ label.position.set(0, 0.05, G.d / 2 + 0.02); // front face (towards camera)
 label.renderOrder = 2;
 gateGroup.add(label);
 scene.add(gateGroup);
+// One timer for the gate punch. 0 = just hit; large = idle and perfectly still.
+const GATE_BASE = new THREE.Color(0x7cc8ff);
+const GATE_WHITE = new THREE.Color(0xffffff);
+let gateFx = true;
+let gatePunch = 1;
+let gateLive = false;
+function restGate() {
+  gateGroup.scale.set(1, 1, 1);
+  gateGroup.position.x = G.x;
+  label.scale.set(1, 1, 1);
+  gatePanel.material.opacity = 0.38;
+  gatePanel.material.color.copy(GATE_BASE);
+  gateLive = false;
+  gatePunch = 1;
+}
+function punchGate() {
+  if (!gateFx) return;
+  gatePunch = 0; // re-triggers amp to 0.12 via the exp below
+  gateLive = true;
+}
+function updateGatePunch(dt) {
+  if (!gateLive) return;
+  if (!gateFx) { restGate(); return; }
+  gatePunch += dt;
+  const env = Math.exp(-gatePunch / 0.03);          // ~90 ms back to rest
+  const pop = Math.min(0.15, 0.12 * env);           // scale 1.12, never past 1.15
+  if (pop < 0.001) { restGate(); return; }
+  gateGroup.scale.set(1 + pop, 1 + pop, 1);          // x/y only; z stays 1
+  const flash = Math.exp(-gatePunch / 0.034);       // opacity + label, ~100 ms
+  gateGroup.position.x = G.x + (gatePunch < 0.045 ? 0.03 : -0.03) * (pop / 0.12);
+  gatePanel.material.opacity = 0.38 + 0.27 * flash;  // 0.38 -> 0.65
+  gatePanel.material.color.copy(GATE_BASE).lerp(GATE_WHITE, flash);
+  const ls = 1 + 0.18 * flash;                       // label 1 -> 1.18
+  label.scale.set(ls, ls, 1);
+}
 
 // Target wall: full track width, sitting on y=0, near the far end (Unity z=23).
 const wallW = 8, wallH = 2.5, wallD = 0.6, wallZ = 23;
@@ -222,6 +257,7 @@ const inSensitivity = document.getElementById('in-sensitivity');
 const inSmoothK = document.getElementById('in-smoothK');
 const inClampX = document.getElementById('in-clampX');
 const inTouchSmooth = document.getElementById('in-touchSmooth');
+const inGateFx = document.getElementById('in-gateFx');
 const outSensitivity = document.getElementById('out-sensitivity');
 const outSmoothK = document.getElementById('out-smoothK');
 const outClampX = document.getElementById('out-clampX');
@@ -241,7 +277,7 @@ function formatTune(v) { return String(Number(Number(v).toFixed(2))); }
 function persistTune() {
   try {
     localStorage.setItem(TUNE_KEY, JSON.stringify({
-      sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth,
+      sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx,
     }));
   } catch (_) {}
 }
@@ -256,6 +292,7 @@ function loadTune() {
   if (smoothK != null) CFG.smoothK = smoothK;
   if (clampX != null) CFG.clampX = clampX;
   touchSmooth = saved.touchSmooth === true;
+  if (typeof saved.gateFx === 'boolean') gateFx = saved.gateFx;
 }
 function constrainTarget() {
   if (targetX > CFG.clampX || targetX < -CFG.clampX) {
@@ -268,6 +305,7 @@ function syncTuneUi() {
   inSmoothK.value = String(CFG.smoothK);
   inClampX.value = String(CFG.clampX);
   inTouchSmooth.checked = touchSmooth;
+  inGateFx.checked = gateFx;
   outSensitivity.textContent = formatTune(CFG.sensitivity);
   outSmoothK.textContent = formatTune(CFG.smoothK);
   outClampX.textContent = formatTune(CFG.clampX);
@@ -302,12 +340,18 @@ inTouchSmooth.addEventListener('change', () => {
   moveSamples.length = 0;
   persistTune();
 });
+inGateFx.addEventListener('change', () => {
+  gateFx = inGateFx.checked;
+  if (!gateFx) restGate();
+  persistTune();
+});
 document.getElementById('tune-reset').addEventListener('click', (e) => {
   e.stopPropagation();
   CFG.sensitivity = 11;
   CFG.smoothK = 30;
   CFG.clampX = 3.5;
   touchSmooth = false;
+  gateFx = true;
   moveSamples.length = 0;
   syncTuneUi();
   try { localStorage.removeItem(TUNE_KEY); } catch (_) {}
@@ -369,7 +413,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-  hud.textContent = `v0.3\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
+  hud.textContent = `v0.4\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
 }
 
 function frame(now) {
@@ -404,6 +448,7 @@ function frame(now) {
         spawn(bx[i] + copySign * G.spread * k, z1, bAge[i], bPassed[i]); // copy inherits age + gate flag
         copySign = -copySign;
       }
+      punchGate();
     }
     if (z1 >= wz0 && z0 <= wz1 && bx[i] >= wx0 && bx[i] <= wx1) {
       bAge[i] = CFG.bulletLife; // removed below, same frame
@@ -417,6 +462,7 @@ function frame(now) {
     wallFlash = 0.08;
   }
   hitsPerSec = hitsInLastSecond();
+  updateGatePunch(dt);
 
   // Wall flash (~80 ms). Reuses the material colour and scale; nothing allocated per hit.
   if (wallFlash > 0) {

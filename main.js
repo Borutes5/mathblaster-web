@@ -23,10 +23,11 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b2a5b);
 
-// Camera: Unity pos (0,9,-7), rot x 40°, vertical FOV 60.
+// Camera: Unity pos (0,9,-7), vertical FOV 60.
+// Pitch 30° down (three.js rot x -30°) so the z=23 wall sits below the top HUD on a tall phone.
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 200);
 camera.position.set(0, 9, 7);
-camera.rotation.set(THREE.MathUtils.degToRad(-40), 0, 0);
+camera.rotation.set(THREE.MathUtils.degToRad(-30), 0, 0);
 
 scene.add(new THREE.HemisphereLight(0xdfefff, 0x1a3a6a, 1.6));
 const sun = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -413,7 +414,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-  hud.textContent = `v0.4\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
+  hud.textContent = `v0.5\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
 }
 
 function frame(now) {

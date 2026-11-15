@@ -125,31 +125,53 @@ function kill(i) { // swap-remove
 let x = 0, targetX = 0;
 let activeId = null, anchorPx = 0, anchorTarget = 0;
 const hint = document.getElementById('hint');
+let touchSmooth = false;          // optional pointer-x average; default OFF
+const moveSamples = [];
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
   if (activeId !== null) return; // one steering finger at a time
   activeId = e.pointerId;
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  moveSamples.length = 0;
   anchorPx = e.clientX; anchorTarget = targetX;
   hint.style.opacity = '0';
 }, { passive: false });
+function smoothedPointerX(e) {
+  if (!touchSmooth) return e.clientX;
+  moveSamples.push(e.clientX);
+  if (moveSamples.length > 3) moveSamples.shift();
+  let s = 0;
+  for (let i = 0; i < moveSamples.length; i++) s += moveSamples[i];
+  return s / moveSamples.length;
+}
 canvas.addEventListener('pointermove', (e) => {
   if (e.pointerId !== activeId) return;
   e.preventDefault();
   const w = window.innerWidth || 1;
+  const px = smoothedPointerX(e);
   // use coalesced events' latest position (same result, finest-grained)
-  const t = anchorTarget + ((e.clientX - anchorPx) / w) * CFG.sensitivity;
+  const t = anchorTarget + ((px - anchorPx) / w) * CFG.sensitivity;
   if (t > CFG.clampX || t < -CFG.clampX) {
     targetX = t > 0 ? CFG.clampX : -CFG.clampX;
-    anchorPx = e.clientX; anchorTarget = targetX; // re-anchor at the edge
+    anchorPx = px; anchorTarget = targetX; // re-anchor at the edge
+    if (touchSmooth) { moveSamples.length = 0; moveSamples.push(e.clientX); }
   } else targetX = t;
 }, { passive: false });
 function endPointer(e) { if (e.pointerId === activeId) activeId = null; }
 canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('lostpointercapture', endPointer);
-// Block page scroll / pinch / pull-to-refresh / double-tap zoom / long-press menu
-const block = (e) => e.preventDefault();
+// Block page scroll / pinch / pull-to-refresh / double-tap zoom / long-press menu.
+// Touches that start on the tune UI are left alone so iOS Safari can drag the sliders.
+function eventInTuneUi(e) {
+  const n = e.target;
+  const el = n && n.nodeType === 1 ? n : n && n.parentElement;
+  return !!(el && el.closest && el.closest('#actions, #tune-panel'));
+}
+const block = (e) => {
+  if (e.type.startsWith('touch') && eventInTuneUi(e)) return;
+  e.preventDefault();
+};
 for (const ev of ['touchstart', 'touchmove', 'touchend', 'gesturestart', 'gesturechange', 'gestureend', 'dblclick', 'contextmenu'])
   document.addEventListener(ev, block, { passive: false });
 
@@ -160,6 +182,103 @@ let hudOn = true;
 toggle.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
 toggle.addEventListener('click', (e) => { e.stopPropagation(); hudOn = !hudOn; hud.style.display = hudOn ? '' : 'none'; });
 let fpsFrames = 0, fpsTime = 0, fps = 0, worstMs = 0, worstAcc = 0;
+
+// ---------- Live tune (persisted; defaults stay the Unity values) ----------
+const TUNE_KEY = 'mathblaster-tune';
+const inSensitivity = document.getElementById('in-sensitivity');
+const inSmoothK = document.getElementById('in-smoothK');
+const inClampX = document.getElementById('in-clampX');
+const inTouchSmooth = document.getElementById('in-touchSmooth');
+const outSensitivity = document.getElementById('out-sensitivity');
+const outSmoothK = document.getElementById('out-smoothK');
+const outClampX = document.getElementById('out-clampX');
+const tuneBtn = document.getElementById('tune');
+const tunePanel = document.getElementById('tune-panel');
+
+function quantize(value, min, max, step) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return null;
+  const q = min + Math.round((n - min) / step) * step;
+  const decimals = (String(step).split('.')[1] || '').length;
+  const out = Number(q.toFixed(decimals));
+  if (out < min || out > max) return null;
+  return out;
+}
+function formatTune(v) { return String(Number(Number(v).toFixed(2))); }
+function persistTune() {
+  try {
+    localStorage.setItem(TUNE_KEY, JSON.stringify({
+      sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth,
+    }));
+  } catch (_) {}
+}
+function loadTune() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(TUNE_KEY) || 'null'); } catch (_) { saved = null; }
+  if (!saved || typeof saved !== 'object') return;
+  const sensitivity = quantize(saved.sensitivity, 6, 16, 0.5);
+  const smoothK = quantize(saved.smoothK, 5, 60, 1);
+  const clampX = quantize(saved.clampX, 2.5, 3.5, 0.1);
+  if (sensitivity != null) CFG.sensitivity = sensitivity;
+  if (smoothK != null) CFG.smoothK = smoothK;
+  if (clampX != null) CFG.clampX = clampX;
+  touchSmooth = saved.touchSmooth === true;
+}
+function constrainTarget() {
+  if (targetX > CFG.clampX || targetX < -CFG.clampX) {
+    targetX = Math.min(CFG.clampX, Math.max(-CFG.clampX, targetX));
+    anchorTarget = targetX;
+  }
+}
+function syncTuneUi() {
+  inSensitivity.value = String(CFG.sensitivity);
+  inSmoothK.value = String(CFG.smoothK);
+  inClampX.value = String(CFG.clampX);
+  inTouchSmooth.checked = touchSmooth;
+  outSensitivity.textContent = formatTune(CFG.sensitivity);
+  outSmoothK.textContent = formatTune(CFG.smoothK);
+  outClampX.textContent = formatTune(CFG.clampX);
+}
+function bindRange(input, key, min, max, step, out) {
+  input.addEventListener('input', () => {
+    const v = quantize(input.value, min, max, step);
+    if (v == null) return;
+    CFG[key] = v;
+    out.textContent = formatTune(v);
+    if (key === 'clampX') constrainTarget();
+    persistTune();
+  });
+}
+loadTune();
+constrainTarget();
+syncTuneUi();
+tuneBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+tuneBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const open = tunePanel.hasAttribute('hidden');
+  if (open) tunePanel.removeAttribute('hidden');
+  else tunePanel.setAttribute('hidden', '');
+  tuneBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+});
+tunePanel.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+bindRange(inSensitivity, 'sensitivity', 6, 16, 0.5, outSensitivity);
+bindRange(inSmoothK, 'smoothK', 5, 60, 1, outSmoothK);
+bindRange(inClampX, 'clampX', 2.5, 3.5, 0.1, outClampX);
+inTouchSmooth.addEventListener('change', () => {
+  touchSmooth = inTouchSmooth.checked;
+  moveSamples.length = 0;
+  persistTune();
+});
+document.getElementById('tune-reset').addEventListener('click', (e) => {
+  e.stopPropagation();
+  CFG.sensitivity = 11;
+  CFG.smoothK = 30;
+  CFG.clampX = 3.5;
+  touchSmooth = false;
+  moveSamples.length = 0;
+  syncTuneUi();
+  try { localStorage.removeItem(TUNE_KEY); } catch (_) {}
+});
 
 // ---------- Resize ----------
 function resize() {
@@ -226,7 +345,7 @@ function frame(now) {
   fpsFrames++; fpsTime += dt; worstAcc = Math.max(worstAcc, dt * 1000);
   if (fpsTime >= 0.5) {
     fps = fpsFrames / fpsTime; worstMs = worstAcc; fpsFrames = 0; fpsTime = 0; worstAcc = 0;
-    if (hudOn) hud.textContent = `FPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}`;
+    if (hudOn) hud.textContent = `v0.2\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}`;
   }
   requestAnimationFrame(frame);
 }

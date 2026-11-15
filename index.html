@@ -15,8 +15,9 @@
     -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; position:fixed; inset:0; }
   canvas#game { display:block; width:100vw; height:100vh; height:100dvh; touch-action:none; }
   #hud { position:fixed; top:calc(env(safe-area-inset-top) + 8px); left:calc(env(safe-area-inset-left) + 8px);
+    max-width:min(280px, calc(100vw - 130px));
     font:600 13px/1.35 ui-monospace, Menlo, monospace; color:#cfe6ff; background:rgba(5,20,45,.65);
-    border:1px solid rgba(160,200,255,.4); border-radius:6px; padding:5px 8px; white-space:pre; pointer-events:none; z-index:2; }
+    border:1px solid rgba(160,200,255,.4); border-radius:6px; padding:5px 8px; white-space:pre-wrap; pointer-events:none; z-index:2; }
   #actions { position:fixed; top:calc(env(safe-area-inset-top) + 8px); right:calc(env(safe-area-inset-right) + 8px);
     display:flex; gap:6px; z-index:4; touch-action:manipulation; }
   #actions button { font:600 13px ui-monospace, Menlo, monospace; color:#cfe6ff; background:rgba(5,20,45,.65);
@@ -42,7 +43,7 @@
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="hud">v0.7</div>
+<div id="hud">v0.8</div>
 <div id="actions">
   <button id="tune" type="button" aria-expanded="false" aria-controls="tune-panel">TUNE</button>
   <button id="toggle" type="button">FPS</button>
@@ -63,6 +64,7 @@
   </div>
   <label class="tune-check"><input id="in-gateFx" type="checkbox" checked> Gate FX</label>
   <label class="tune-check"><input id="in-marker" type="checkbox"> Marker</label>
+  <label class="tune-check"><input id="in-m2" type="checkbox" checked> M2 gates</label>
   <button id="reset-hits" type="button">Reset hits</button>
 </div>
 <div id="safe-bottom" aria-hidden="true"></div>

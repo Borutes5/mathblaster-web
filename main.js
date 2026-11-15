@@ -23,11 +23,37 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b2a5b);
 
-// Camera: Unity pos (0,9,-7), vertical FOV 60.
-// Pitch 30° down (three.js rot x -30°) so the z=23 wall sits below the top HUD on a tall phone.
+// Camera pitch stays 30° down, FOV 60. Distance/height slide along that ray so the
+// 8-wide track plus the cannon (half-width 0.5) fits the current aspect, with the
+// wall number kept under the top HUD band.
+const CAM_PITCH = THREE.MathUtils.degToRad(-30);
+const CAM_SIN = Math.sin(Math.PI / 6), CAM_COS = Math.cos(Math.PI / 6);
+const CAM_TAN = Math.tan(THREE.MathUtils.degToRad(30)); // tan(vertical FOV / 2)
+const FIT_HALF = 4.5;   // track half-width 4 + cannon half-width 0.5
+const FIT_NDC = 0.96;   // small margin inside the frame
+const FIT_Y = 0.5, FIT_Z = 0.5; // cannon near face (three.js z, toward the camera)
+const WALL_CLEAR_PX = 120;
+const WALL_NUM_TOP_Y = 1.25 + 1.125, WALL_NUM_Z = -23 + 0.32;
+const fitDepth0 = -((FIT_Y - 9) * CAM_SIN + (FIT_Z - 7) * CAM_COS);
+const wallYCam = (WALL_NUM_TOP_Y - 9) * CAM_COS + (WALL_NUM_Z - 7) * (-CAM_SIN);
+const wallDepth0 = -((WALL_NUM_TOP_Y - 9) * CAM_SIN + (WALL_NUM_Z - 7) * CAM_COS);
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 200);
-camera.position.set(0, 9, 7);
-camera.rotation.set(THREE.MathUtils.degToRad(-30), 0, 0);
+camera.rotation.x = CAM_PITCH;
+function fitCamera(w, h) {
+  const aspect = w / Math.max(h, 1);
+  camera.aspect = aspect;
+  camera.fov = 60;
+  camera.rotation.x = CAM_PITCH;
+  let d = Math.max(0, (FIT_HALF / FIT_NDC) / (CAM_TAN * aspect) - fitDepth0);
+  const ndcMax = 1 - 2 * WALL_CLEAR_PX / h;
+  if (ndcMax > 0.08) {
+    const dWall = wallYCam / (CAM_TAN * ndcMax) - wallDepth0;
+    if (dWall > d) d = dWall;
+  }
+  camera.position.set(0, 9 + CAM_SIN * d, 7 + CAM_COS * d);
+  camera.updateMatrixWorld();
+  camera.updateProjectionMatrix();
+}
 
 scene.add(new THREE.HemisphereLight(0xdfefff, 0x1a3a6a, 1.6));
 const sun = new THREE.DirectionalLight(0xffffff, 1.4);
@@ -75,6 +101,46 @@ const cannon = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLamb
 cannon.position.set(0, 0.5, 0);
 cannon.add(new THREE.LineSegments(new THREE.EdgesGeometry(cannon.geometry), new THREE.LineBasicMaterial({ color: 0x0b2a5b })));
 scene.add(cannon);
+
+// 1-unit lineup marker (Unity z=6). Off until the TUNE checkbox is enabled.
+const MARKER_IDLE = 0xfff4c2, MARKER_OK = 0x3dff7a;
+const marker = new THREE.Mesh(new THREE.BoxGeometry(1, 0.05, 0.28),
+  new THREE.MeshBasicMaterial({ color: MARKER_IDLE }));
+marker.position.set(0, 0.04, -6);
+marker.visible = false;
+scene.add(marker);
+let markerOn = false, markerX = 0, markerHold = 0, markerAge = 0, markerGreen = 0;
+let markerLast = null, markerSum = 0, markerN = 0;
+function placeMarker() {
+  markerX = Math.random() * 6 - 3;
+  marker.position.x = markerX;
+  marker.position.z = -6;
+  markerHold = 0;
+  markerAge = 0;
+  markerGreen = 0;
+  marker.material.color.setHex(MARKER_IDLE);
+  marker.visible = true;
+}
+function updateMarker(dt) {
+  if (!markerOn) return;
+  if (markerGreen > 0) {
+    markerGreen -= dt;
+    if (markerGreen <= 0) placeMarker();
+    return;
+  }
+  markerAge += dt;
+  if (Math.abs(x - markerX) <= 0.5) {
+    markerHold += dt;
+    if (markerHold >= 0.3) {
+      markerLast = markerAge;
+      markerSum += markerAge;
+      markerN += 1;
+      marker.material.color.setHex(MARKER_OK);
+      markerGreen = 0.4;
+      paintHud();
+    }
+  } else markerHold = 0;
+}
 
 // Gate x2
 const G = CFG.gate;
@@ -259,6 +325,7 @@ const inSmoothK = document.getElementById('in-smoothK');
 const inClampX = document.getElementById('in-clampX');
 const inTouchSmooth = document.getElementById('in-touchSmooth');
 const inGateFx = document.getElementById('in-gateFx');
+const inMarker = document.getElementById('in-marker');
 const outSensitivity = document.getElementById('out-sensitivity');
 const outSmoothK = document.getElementById('out-smoothK');
 const outClampX = document.getElementById('out-clampX');
@@ -278,7 +345,7 @@ function formatTune(v) { return String(Number(Number(v).toFixed(2))); }
 function persistTune() {
   try {
     localStorage.setItem(TUNE_KEY, JSON.stringify({
-      sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx,
+      sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx, marker: markerOn,
     }));
   } catch (_) {}
 }
@@ -294,6 +361,7 @@ function loadTune() {
   if (clampX != null) CFG.clampX = clampX;
   touchSmooth = saved.touchSmooth === true;
   if (typeof saved.gateFx === 'boolean') gateFx = saved.gateFx;
+  markerOn = saved.marker === true;
 }
 function constrainTarget() {
   if (targetX > CFG.clampX || targetX < -CFG.clampX) {
@@ -307,6 +375,7 @@ function syncTuneUi() {
   inClampX.value = String(CFG.clampX);
   inTouchSmooth.checked = touchSmooth;
   inGateFx.checked = gateFx;
+  inMarker.checked = markerOn;
   outSensitivity.textContent = formatTune(CFG.sensitivity);
   outSmoothK.textContent = formatTune(CFG.smoothK);
   outClampX.textContent = formatTune(CFG.clampX);
@@ -324,6 +393,7 @@ function bindRange(input, key, min, max, step, out) {
 loadTune();
 constrainTarget();
 syncTuneUi();
+if (markerOn) placeMarker();
 tuneBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
 tuneBtn.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -346,6 +416,13 @@ inGateFx.addEventListener('change', () => {
   if (!gateFx) restGate();
   persistTune();
 });
+inMarker.addEventListener('change', () => {
+  markerOn = inMarker.checked;
+  if (markerOn) placeMarker();
+  else marker.visible = false;
+  persistTune();
+  paintHud();
+});
 document.getElementById('tune-reset').addEventListener('click', (e) => {
   e.stopPropagation();
   CFG.sensitivity = 11;
@@ -353,8 +430,12 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   CFG.clampX = 3.5;
   touchSmooth = false;
   gateFx = true;
+  markerOn = false;
+  marker.visible = false;
+  markerHold = 0; markerGreen = 0; markerLast = null; markerSum = 0; markerN = 0;
   moveSamples.length = 0;
   syncTuneUi();
+  paintHud();
   try { localStorage.removeItem(TUNE_KEY); } catch (_) {}
 });
 document.getElementById('reset-hits').addEventListener('click', (e) => {
@@ -366,7 +447,7 @@ document.getElementById('reset-hits').addEventListener('click', (e) => {
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h, false);
-  camera.aspect = w / h; camera.updateProjectionMatrix();
+  fitCamera(w, h);
 }
 window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', () => setTimeout(resize, 200));
@@ -414,7 +495,13 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-  hud.textContent = `v0.5\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
+  let text = `v0.6\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
+  if (markerOn) {
+    const last = markerLast == null ? '—' : markerLast.toFixed(2) + 's';
+    const avg = markerN ? (markerSum / markerN).toFixed(2) + 's' : '—';
+    text += `\nalign ${last}  avg ${avg}`;
+  }
+  hud.textContent = text;
 }
 
 function frame(now) {
@@ -425,6 +512,7 @@ function frame(now) {
   // Steering
   x += (targetX - x) * (1 - Math.exp(-CFG.smoothK * dt));
   cannon.position.x = x;
+  updateMarker(dt);
 
   // Auto-fire (accumulator keeps exact 8/s regardless of frame rate)
   fireAcc += dt;

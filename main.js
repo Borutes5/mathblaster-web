@@ -1,4 +1,4 @@
-// MathBlaster v2 – browser prototype of M1.1–M1.3 (drag steering, auto-fire, x2 gate).
+// MathBlaster v2 – browser prototype of M1.1–M1.4 (drag steering, auto-fire, x2 gate, target wall).
 // Coordinates: Unity (x, y, z forward)  ->  three.js (x, y, -z). All gameplay maths is done in Unity-style z.
 import * as THREE from './vendor/three.module.min.js';
 
@@ -99,6 +99,39 @@ label.position.set(0, 0.05, G.d / 2 + 0.02); // front face (towards camera)
 label.renderOrder = 2;
 gateGroup.add(label);
 scene.add(gateGroup);
+
+// Target wall: full track width, sitting on y=0, near the far end (Unity z=23).
+const wallW = 8, wallH = 2.5, wallD = 0.6, wallZ = 23;
+const WALL_BASE = new THREE.Color(0x8ebbe8);
+const WALL_FLASH = new THREE.Color(0xffffff);
+const wallMat = new THREE.MeshBasicMaterial({ color: WALL_BASE });
+const wall = new THREE.Mesh(new THREE.BoxGeometry(wallW, wallH, wallD), wallMat);
+wall.position.set(0, wallH / 2, -wallZ);
+wall.add(new THREE.LineSegments(new THREE.EdgesGeometry(wall.geometry), new THREE.LineBasicMaterial({ color: 0xf4fbff })));
+const hitCanvas = document.createElement('canvas');
+hitCanvas.width = 512; hitCanvas.height = 160;
+const hitCtx = hitCanvas.getContext('2d');
+hitCtx.textAlign = 'center'; hitCtx.textBaseline = 'middle'; hitCtx.lineWidth = 14;
+const hitTex = new THREE.CanvasTexture(hitCanvas);
+hitTex.colorSpace = THREE.SRGBColorSpace; hitTex.anisotropy = 4;
+const hitLabel = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 2.25),
+  new THREE.MeshBasicMaterial({ map: hitTex, transparent: true, depthWrite: false }));
+hitLabel.position.set(0, 0, wallD / 2 + 0.02); // front face (towards camera)
+hitLabel.renderOrder = 2;
+wall.add(hitLabel);
+scene.add(wall);
+let hits = 0, hitsShown = -1, hitDrawAcc = 0, wallFlash = 0, wallPulsing = false;
+function paintHits(n) {
+  const digits = n < 1000 ? 3 : n < 10000 ? 4 : n < 100000 ? 5 : 6;
+  hitCtx.font = '900 ' + (digits <= 3 ? 128 : digits === 4 ? 104 : digits === 5 ? 84 : 68) + 'px system-ui, -apple-system, Helvetica, Arial, sans-serif';
+  hitCtx.clearRect(0, 0, hitCanvas.width, hitCanvas.height);
+  hitCtx.strokeStyle = '#0b2a5b'; hitCtx.fillStyle = '#ffffff';
+  hitCtx.strokeText(String(n), 256, 84);
+  hitCtx.fillText(String(n), 256, 84);
+  hitTex.needsUpdate = true;
+  hitsShown = n;
+}
+paintHits(0);
 
 // ---------- Bullet pool (struct-of-arrays + one InstancedMesh, no per-shot allocations) ----------
 const N = CFG.maxBullets;
@@ -279,6 +312,10 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   syncTuneUi();
   try { localStorage.removeItem(TUNE_KEY); } catch (_) {}
 });
+document.getElementById('reset-hits').addEventListener('click', (e) => {
+  e.stopPropagation();
+  resetHits();
+});
 
 // ---------- Resize ----------
 function resize() {
@@ -292,14 +329,53 @@ resize();
 
 // ---------- Main loop ----------
 const m4 = new THREE.Matrix4();
-let fireAcc = 0, last = performance.now(), shots = 0;
+let fireAcc = 0, last = performance.now(), shots = 0, time = 0;
 const gx0 = G.x - G.w / 2 - CFG.bulletRadius, gx1 = G.x + G.w / 2 + CFG.bulletRadius;
 const gz0 = G.z - G.d / 2 - CFG.bulletRadius, gz1 = G.z + G.d / 2 + CFG.bulletRadius;
+const wx0 = -wallW / 2 - CFG.bulletRadius, wx1 = wallW / 2 + CFG.bulletRadius;
+const wz0 = wallZ - wallD / 2 - CFG.bulletRadius, wz1 = wallZ + wallD / 2 + CFG.bulletRadius;
 let copySign = 1;
+// Rolling 1s hit window. Fixed ring, no per-hit allocation.
+const HIT_RING = 128;
+const hitStamp = new Float32Array(HIT_RING);
+let hitRingI = 0, hitRingN = 0, hitsPerSec = 0;
+function pushHits(n) {
+  for (let k = 0; k < n; k++) {
+    hitStamp[hitRingI] = time;
+    hitRingI = (hitRingI + 1) % HIT_RING;
+    if (hitRingN < HIT_RING) hitRingN++;
+  }
+}
+function hitsInLastSecond() {
+  const cutoff = time - 1;
+  let c = 0;
+  for (let k = 0; k < hitRingN; k++) {
+    let idx = hitRingI - 1 - k;
+    if (idx < 0) idx += HIT_RING;
+    if (hitStamp[idx] < cutoff) break;
+    c++;
+  }
+  return c;
+}
+function resetHits() {
+  hits = 0;
+  hitRingI = 0; hitRingN = 0; hitsPerSec = 0;
+  wallFlash = 0; wallPulsing = false;
+  wallMat.color.copy(WALL_BASE);
+  wall.scale.set(1, 1, 1);
+  paintHits(0);
+  hitDrawAcc = 0;
+  paintHud();
+}
+function paintHud() {
+  if (!hudOn) return;
+  hud.textContent = `v0.3\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
+}
 
 function frame(now) {
   let dt = (now - last) / 1000; last = now;
   if (dt > 0.1) dt = 0.1; // tab switch / hitch guard
+  time += dt;
 
   // Steering
   x += (targetX - x) * (1 - Math.exp(-CFG.smoothK * dt));
@@ -315,8 +391,9 @@ function frame(now) {
     shots++;
   }
 
-  // Move bullets, gate check (swept along z so fast bullets can't tunnel), expire
+  // Move bullets, gate check (swept along z so fast bullets can't tunnel), wall hit, expire
   const step = CFG.bulletSpeed * dt;
+  let frameHits = 0;
   for (let i = 0; i < count; i++) {
     const z0 = bz[i];
     const z1 = z0 + step;
@@ -328,8 +405,37 @@ function frame(now) {
         copySign = -copySign;
       }
     }
+    if (z1 >= wz0 && z0 <= wz1 && bx[i] >= wx0 && bx[i] <= wx1) {
+      bAge[i] = CFG.bulletLife; // removed below, same frame
+      frameHits++;
+    }
   }
   for (let i = count - 1; i >= 0; i--) if (bAge[i] >= CFG.bulletLife) kill(i);
+  if (frameHits) {
+    hits += frameHits;
+    pushHits(frameHits);
+    wallFlash = 0.08;
+  }
+  hitsPerSec = hitsInLastSecond();
+
+  // Wall flash (~80 ms). Reuses the material colour and scale; nothing allocated per hit.
+  if (wallFlash > 0) {
+    wallFlash = Math.max(0, wallFlash - dt);
+    const k = wallFlash / 0.08;
+    wallMat.color.copy(WALL_BASE).lerp(WALL_FLASH, k);
+    const s = 1 + 0.035 * k;
+    wall.scale.set(s, s, s);
+    wallPulsing = true;
+  } else if (wallPulsing) {
+    wallMat.color.copy(WALL_BASE);
+    wall.scale.set(1, 1, 1);
+    wallPulsing = false;
+  }
+  hitDrawAcc += dt;
+  if (hits !== hitsShown && hitDrawAcc >= 0.1) {
+    paintHits(hits);
+    hitDrawAcc = 0;
+  }
 
   // Upload instance matrices
   for (let i = 0; i < count; i++) {
@@ -345,7 +451,7 @@ function frame(now) {
   fpsFrames++; fpsTime += dt; worstAcc = Math.max(worstAcc, dt * 1000);
   if (fpsTime >= 0.5) {
     fps = fpsFrames / fpsTime; worstMs = worstAcc; fpsFrames = 0; fpsTime = 0; worstAcc = 0;
-    if (hudOn) hud.textContent = `v0.2\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}`;
+    paintHud();
   }
   requestAnimationFrame(frame);
 }

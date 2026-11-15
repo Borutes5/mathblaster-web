@@ -10,10 +10,10 @@ const CFG = {
   fireRate: 8,            // shots per second
   muzzleZ: 0.7,
   bulletSpeed: 25,
-  bulletLife: 1.5,
+  bulletLife: 2.2,         // 25 u/s still clears the wall at z=40 with margin
   bulletRadius: 0.15,     // diameter 0.3
   gate: { x: 1.75, y: 1, z: 12, w: 3.5, h: 2, d: 0.2, multiplier: 2, spread: 0.35 },
-  track: { width: 8, zMin: -5, zMax: 25 }, // Unity plane at z=10, scale (0.8,1,3)
+  track: { width: 8, zMin: -1, zMax: 42 }, // short pad behind the cannon, wall at z=40
   maxBullets: 512,
 };
 
@@ -23,36 +23,78 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0b2a5b);
 
-// Camera pitch stays 30° down, FOV 60. Distance/height slide along that ray so the
-// 8-wide track plus the cannon (half-width 0.5) fits the current aspect, with the
-// wall number kept under the top HUD band.
-const CAM_PITCH = THREE.MathUtils.degToRad(-30);
-const CAM_SIN = Math.sin(Math.PI / 6), CAM_COS = Math.cos(Math.PI / 6);
-const CAM_TAN = Math.tan(THREE.MathUtils.degToRad(30)); // tan(vertical FOV / 2)
-const FIT_HALF = 4.5;   // track half-width 4 + cannon half-width 0.5
-const FIT_NDC = 0.96;   // small margin inside the frame
-const FIT_Y = 0.5, FIT_Z = 0.5; // cannon near face (three.js z, toward the camera)
+// Pitch ~30° down, FOV 60. Height and distance are solved per aspect so the cannon
+// base sits ~12% above the bottom (or just above the home indicator) and x=±4.5
+// at the cannon's near face stays inside 96% of the frame.
+const PITCH_DOWN = 30 * Math.PI / 180;
+const PITCH_SHALLOW = 18 * Math.PI / 180;
+const VFOV_TAN = Math.tan(30 * Math.PI / 180);
+const FIT_HALF = 4.5;
+const FIT_NDC = 0.96;
 const WALL_CLEAR_PX = 120;
-const WALL_NUM_TOP_Y = 1.25 + 1.125, WALL_NUM_Z = -23 + 0.32;
-const fitDepth0 = -((FIT_Y - 9) * CAM_SIN + (FIT_Z - 7) * CAM_COS);
-const wallYCam = (WALL_NUM_TOP_Y - 9) * CAM_COS + (WALL_NUM_Z - 7) * (-CAM_SIN);
-const wallDepth0 = -((WALL_NUM_TOP_Y - 9) * CAM_SIN + (WALL_NUM_Z - 7) * CAM_COS);
-const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 200);
-camera.rotation.x = CAM_PITCH;
-function fitCamera(w, h) {
+const LABEL_H = 2.25;
+const TARGET_PLANE_PX = 73; // ~40px of ink; digits fill about 55% of the plane
+const _pv = new THREE.Vector3();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 400);
+function safeBottomPx() {
+  const el = document.getElementById('safe-bottom');
+  return el ? el.offsetHeight : 0;
+}
+function poseCamera(pitch, w, h) {
+  const SIN = Math.sin(pitch), COS = Math.cos(pitch);
   const aspect = w / Math.max(h, 1);
-  camera.aspect = aspect;
+  const gap = Math.max(0.12 * h, safeBottomPx());
+  const ndcBase = 2 * (gap / h) - 1;
+  const depthF = (FIT_HALF / FIT_NDC) / (VFOV_TAN * aspect);
+  const depthB = depthF + 0.5 * SIN;
+  const yCamB = ndcBase * depthB * VFOV_TAN;
+  const RHS1 = depthF + 0.5 * (SIN + COS);
+  const RHS2 = yCamB + 0.5 * SIN;
   camera.fov = 60;
-  camera.rotation.x = CAM_PITCH;
-  let d = Math.max(0, (FIT_HALF / FIT_NDC) / (CAM_TAN * aspect) - fitDepth0);
-  const ndcMax = 1 - 2 * WALL_CLEAR_PX / h;
-  if (ndcMax > 0.08) {
-    const dWall = wallYCam / (CAM_TAN * ndcMax) - wallDepth0;
-    if (dWall > d) d = dWall;
-  }
-  camera.position.set(0, 9 + CAM_SIN * d, 7 + CAM_COS * d);
+  camera.aspect = aspect;
+  camera.rotation.x = -pitch;
+  camera.position.set(0, SIN * RHS1 - COS * RHS2, COS * RHS1 + SIN * RHS2);
   camera.updateMatrixWorld();
   camera.updateProjectionMatrix();
+}
+function screenY(y, z, h) {
+  _pv.set(0, y, z).project(camera);
+  return (-_pv.y * 0.5 + 0.5) * h;
+}
+function fitCamera(w, h) {
+  const zFront = -wallZ + wallD / 2 + 0.02;
+  let pitch = PITCH_DOWN;
+  poseCamera(pitch, w, h);
+  if (screenY(1.25 + LABEL_H / 2, zFront, h) < WALL_CLEAR_PX) {
+    let lo = PITCH_SHALLOW, hi = pitch;
+    for (let i = 0; i < 10; i++) {
+      const mid = (lo + hi) / 2;
+      poseCamera(mid, w, h);
+      if (screenY(1.25 + LABEL_H / 2, zFront, h) < WALL_CLEAR_PX) hi = mid;
+      else lo = mid;
+    }
+    poseCamera(lo, w, h);
+  }
+  const basePx = Math.abs(screenY(1.25 + LABEL_H / 2, zFront, h) - screenY(1.25 - LABEL_H / 2, zFront, h));
+  let s = TARGET_PLANE_PX / Math.max(basePx, 1);
+  const place = (scale) => {
+    const worldH = LABEL_H * scale;
+    const localY = 1.25 - worldH / 2 < 0.06 ? worldH / 2 - 1.19 : 0;
+    const top = 1.25 + localY + worldH / 2;
+    return { localY, top: screenY(top, zFront, h) };
+  };
+  if (place(s).top < WALL_CLEAR_PX) {
+    let lo = 0.8, hi = s;
+    for (let i = 0; i < 12; i++) {
+      const mid = (lo + hi) / 2;
+      if (place(mid).top < WALL_CLEAR_PX) hi = mid;
+      else lo = mid;
+    }
+    s = lo;
+  }
+  const placed = place(s);
+  hitLabel.scale.set(s, s, 1);
+  hitLabel.position.y = placed.localY;
 }
 
 scene.add(new THREE.HemisphereLight(0xdfefff, 0x1a3a6a, 1.6));
@@ -202,8 +244,8 @@ function updateGatePunch(dt) {
   label.scale.set(ls, ls, 1);
 }
 
-// Target wall: full track width, sitting on y=0, near the far end (Unity z=23).
-const wallW = 8, wallH = 2.5, wallD = 0.6, wallZ = 23;
+// Target wall: full track width, sitting on y=0, far end of the longer track (Unity z=40).
+const wallW = 8, wallH = 2.5, wallD = 0.6, wallZ = 40;
 const WALL_BASE = new THREE.Color(0x8ebbe8);
 const WALL_FLASH = new THREE.Color(0xffffff);
 const wallMat = new THREE.MeshBasicMaterial({ color: WALL_BASE });
@@ -495,7 +537,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-  let text = `v0.6\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
+  let text = `v0.7\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}\nhits ${hits}\nhits/s ${hitsPerSec.toFixed(1)}`;
   if (markerOn) {
     const last = markerLast == null ? '—' : markerLast.toFixed(2) + 's';
     const avg = markerN ? (markerSum / markerN).toFixed(2) + 's' : '—';

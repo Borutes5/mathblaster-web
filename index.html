@@ -35,13 +35,14 @@
   #tune-reset, #reset-hits { font:600 12px ui-monospace, Menlo, monospace; color:#cfe6ff; background:rgba(5,20,45,.65);
     border:1px solid rgba(160,200,255,.4); border-radius:6px; padding:6px 10px; touch-action:manipulation; }
   #reset-hits { display:block; width:100%; margin-top:6px; }
+  #safe-bottom { position:fixed; left:0; bottom:0; width:0; height:env(safe-area-inset-bottom); pointer-events:none; visibility:hidden; }
   #hint { position:fixed; bottom:calc(env(safe-area-inset-bottom) + 18px); left:0; right:0; text-align:center;
     font:600 15px system-ui, sans-serif; color:rgba(207,230,255,.75); pointer-events:none; transition:opacity .6s; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="hud">v0.6</div>
+<div id="hud">v0.7</div>
 <div id="actions">
   <button id="tune" type="button" aria-expanded="false" aria-controls="tune-panel">TUNE</button>
   <button id="toggle" type="button">FPS</button>
@@ -64,6 +65,7 @@
   <label class="tune-check"><input id="in-marker" type="checkbox"> Marker</label>
   <button id="reset-hits" type="button">Reset hits</button>
 </div>
+<div id="safe-bottom" aria-hidden="true"></div>
 <div id="hint">Drag left / right anywhere to steer</div>
 <script type="module" src="./main.js"></script>
 </body>

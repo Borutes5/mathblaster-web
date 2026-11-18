@@ -177,6 +177,277 @@ function paintUnits(n) {
 }
 paintUnits(0);
 
+// Extra cannons (v0.9). Index 0 is the original mesh. Spacing 0.6, group clamped to the track.
+const cannons = [cannon];
+for (let i = 1; i < 4; i++) {
+  const extra = cannon.clone();
+  extra.visible = false;
+  scene.add(extra);
+  cannons.push(extra);
+}
+const HP_OK = new THREE.Color(0x3dff7a);
+const HP_RED = new THREE.Color(0xff4d4d);
+const hpMat = new THREE.MeshBasicMaterial({ color: HP_OK });
+const hpBar = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.1, 0.08), hpMat);
+hpBar.position.set(0, 0.08, 0.4);
+hpBar.visible = false;
+scene.add(hpBar);
+
+// Tier-1 enemies. Fixed pool of 8, two staggered rows, no per-wave allocation.
+const ENEMY_N = 8;
+const ENEMY_R = 0.35;
+const ENEMY_HP = 3;
+const ENEMY_BLUE = new THREE.Color(0x3d8cff);
+const ENEMY_WHITE = new THREE.Color(0xffffff);
+const ENEMY_X = [-3.4, -2.55, -1.7, -1.0, 1.0, 1.7, 2.55, 3.4];
+const ENEMY_ROW = [0, 1, 0, 1, 0, 1, 0, 1]; // 0 = far z 39.3, 1 = near z 37.5
+const enemies = [];
+for (let i = 0; i < ENEMY_N; i++) {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(ENEMY_R, 14, 10),
+    new THREE.MeshLambertMaterial({ color: ENEMY_BLUE }));
+  mesh.visible = false;
+  scene.add(mesh);
+  const cnv = document.createElement('canvas');
+  cnv.width = 128; cnv.height = 64;
+  const ctx = cnv.getContext('2d');
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const tex = new THREE.CanvasTexture(cnv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const tag = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.22),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+  tag.visible = false;
+  tag.renderOrder = 3;
+  scene.add(tag);
+  enemies.push({ mesh, tag, ctx, tex, alive: false, x: 0, z: 0, hp: 0, flash: 0, pop: 0 });
+}
+function paintEnemyHp(en) {
+  const g = en.ctx;
+  g.clearRect(0, 0, 128, 64);
+  g.font = '900 48px system-ui, -apple-system, Helvetica, Arial, sans-serif';
+  g.lineWidth = 8; g.strokeStyle = '#0b2a5b'; g.fillStyle = '#ffffff';
+  g.strokeText(String(en.hp), 64, 34);
+  g.fillText(String(en.hp), 64, 34);
+  en.tex.needsUpdate = true;
+}
+
+// +1 panel. Wave 1 sits at x=-0.2 so the centre lane can reach it; later waves vary in [-1.5, 1.5].
+const PANEL_BASE = new THREE.Color(0x7cc8ff);
+const PANEL_DARK = new THREE.Color(0x1a3358);
+const PANEL_HITS = 6;
+const panelCanvas = document.createElement('canvas');
+panelCanvas.width = 256; panelCanvas.height = 128;
+const panelCtx = panelCanvas.getContext('2d');
+panelCtx.textAlign = 'center'; panelCtx.textBaseline = 'middle';
+const panelTex = new THREE.CanvasTexture(panelCanvas);
+panelTex.colorSpace = THREE.SRGBColorSpace;
+const panelMat = new THREE.MeshBasicMaterial({ color: PANEL_BASE, transparent: true, opacity: 0.9 });
+const panel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.15, 0.22), panelMat);
+const panelTag = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.45),
+  new THREE.MeshBasicMaterial({ map: panelTex, transparent: true, depthWrite: false }));
+panelTag.position.set(0, 0, 0.13);
+panel.add(panelTag);
+panel.visible = false;
+scene.add(panel);
+let panelAlive = false, panelX = 0, panelZ = 20, panelHp = PANEL_HITS, panelPop = 0;
+
+let shooters = 1, shooterHp = 100, wave = 1, waveWait = 0, gameOver = false, hpFlash = 0, foesAlive = 0;
+const banner = document.getElementById('banner');
+function showBanner(text, over) {
+  banner.textContent = text;
+  banner.hidden = false;
+  banner.className = over ? 'over' : 'clear';
+}
+function hideBanner() { banner.hidden = true; banner.textContent = ''; }
+function panelXFor(w) {
+  if (w <= 1) return -0.2;
+  const f = (w * 0.61803398875) % 1;
+  return Math.round((-1.5 + f * 3) * 100) / 100;
+}
+function paintPanelHp() {
+  panelCtx.clearRect(0, 0, 256, 128);
+  panelCtx.font = '900 92px system-ui, -apple-system, Helvetica, Arial, sans-serif';
+  panelCtx.lineWidth = 12; panelCtx.strokeStyle = '#0b2a5b'; panelCtx.fillStyle = '#ffffff';
+  panelCtx.strokeText(String(Math.max(0, panelHp)), 128, 68);
+  panelCtx.fillText(String(Math.max(0, panelHp)), 128, 68);
+  panelTex.needsUpdate = true;
+  const k = (PANEL_HITS - panelHp) / PANEL_HITS;
+  panelMat.color.copy(PANEL_BASE).lerp(PANEL_DARK, k);
+  panelMat.opacity = 0.92 - 0.35 * k;
+}
+function layoutCannons() {
+  const n = v09On ? shooters : 1;
+  const half = 0.5 + (n - 1) * 0.3;
+  const lim = TRACK_LIM - half;
+  const cx = Math.max(-lim, Math.min(lim, x));
+  for (let i = 0; i < 4; i++) {
+    const on = i < n && (v09On || i === 0);
+    cannons[i].visible = on;
+    if (!on) continue;
+    const ox = v09On ? (i - (n - 1) / 2) * 0.6 : 0;
+    cannons[i].position.set(v09On ? cx + ox : x, 0.5, 0);
+  }
+  hpBar.visible = v09On && !gameOver;
+  if (v09On) {
+    hpBar.position.set(cx, 0.08, 0.42);
+    hpBar.scale.x = Math.max(0.04, shooterHp / 100);
+    hpMat.color.copy(hpFlash > 0 ? HP_RED : HP_OK);
+  }
+  unitLabel.visible = !v09On;
+}
+function clearEnemies() {
+  for (let i = 0; i < ENEMY_N; i++) {
+    const en = enemies[i];
+    en.alive = false; en.pop = 0; en.flash = 0;
+    en.mesh.visible = false; en.tag.visible = false;
+  }
+  foesAlive = 0;
+  panelAlive = false; panelPop = 0; panel.visible = false;
+}
+function spawnWave() {
+  clearEnemies();
+  for (let i = 0; i < ENEMY_N; i++) {
+    const en = enemies[i];
+    en.alive = true; en.pop = 0; en.flash = 0;
+    en.hp = ENEMY_HP;
+    en.x = ENEMY_X[i];
+    en.z = ENEMY_ROW[i] ? 37.5 : 39.3;
+    en.mesh.visible = true;
+    en.mesh.scale.setScalar(1);
+    en.mesh.material.color.copy(ENEMY_BLUE);
+    en.mesh.position.set(en.x, ENEMY_R, -en.z);
+    paintEnemyHp(en);
+    en.tag.visible = hpNumbers;
+    en.tag.position.set(en.x, ENEMY_R + 0.48, -en.z + 0.05);
+  }
+  foesAlive = ENEMY_N;
+  panelAlive = true; panelPop = 0; panelHp = PANEL_HITS;
+  panelX = panelXFor(wave); panelZ = 20;
+  panel.visible = true;
+  panel.scale.set(1, 1, 1);
+  paintPanelHp();
+  panel.position.set(panelX, 0.85, -panelZ);
+  hideBanner();
+}
+function damageShooter(n) {
+  if (gameOver || !v09On) return;
+  shooterHp = Math.max(0, shooterHp - n);
+  hpFlash = 0.28;
+  paintHud();
+  if (shooterHp <= 0) {
+    gameOver = true;
+    waveWait = 0;
+    showBanner('Game over - tap to restart', true);
+  }
+}
+function endWave() {
+  if (gameOver) return;
+  for (let i = 0; i < ENEMY_N; i++) {
+    enemies[i].alive = false;
+    enemies[i].pop = 0;
+    enemies[i].mesh.visible = false;
+    enemies[i].tag.visible = false;
+  }
+  panelAlive = false;
+  if (panelPop <= 0) panel.visible = false;
+  showBanner('Wave clear', false);
+  waveWait = 2;
+}
+function clearBullets() {
+  count = 0;
+  bulletMesh.count = 0;
+}
+function restartV09() {
+  gameOver = false;
+  shooterHp = 100;
+  shooters = 1;
+  wave = 1;
+  waveWait = 0;
+  hpFlash = 0;
+  clearBullets();
+  spawnWave();
+  paintHud();
+}
+function breakPanel() {
+  panelAlive = false;
+  panelPop = 0.24;
+  if (shooters < 4) shooters++;
+  paintHud();
+}
+function updateV09(dt) {
+  if (!v09On || gameOver) return;
+  if (waveWait > 0) {
+    waveWait -= dt;
+    if (waveWait <= 0) {
+      wave++;
+      spawnWave();
+      paintHud();
+    }
+    return;
+  }
+  for (let i = 0; i < ENEMY_N; i++) {
+    const en = enemies[i];
+    if (!en.alive) continue;
+    if (en.pop > 0) {
+      en.pop -= dt;
+      const k = Math.max(0, en.pop / 0.2);
+      en.mesh.scale.setScalar(0.35 + 1.15 * k);
+      en.mesh.material.color.copy(ENEMY_WHITE);
+      en.tag.visible = false;
+      if (en.pop <= 0) {
+        en.alive = false;
+        en.mesh.visible = false;
+      }
+      continue;
+    }
+    en.z -= enemySpeed * dt;
+    if (en.z <= 0.5) {
+      en.alive = false;
+      en.mesh.visible = false;
+      en.tag.visible = false;
+      foesAlive--;
+      damageShooter(5);
+      if (gameOver) return;
+      continue;
+    }
+    const shrink = 0.62 + 0.38 * (en.hp / ENEMY_HP);
+    en.mesh.scale.setScalar(shrink);
+    if (en.flash > 0) {
+      en.flash = Math.max(0, en.flash - dt);
+      en.mesh.material.color.copy(ENEMY_BLUE).lerp(ENEMY_WHITE, en.flash / 0.12);
+    } else en.mesh.material.color.copy(ENEMY_BLUE);
+    en.mesh.position.set(en.x, ENEMY_R * shrink, -en.z);
+    en.tag.visible = hpNumbers;
+    if (hpNumbers) en.tag.position.set(en.x, ENEMY_R * shrink + 0.46, -en.z + 0.08);
+  }
+  if (panelPop > 0) {
+    panelPop -= dt;
+    const k = Math.max(0, panelPop / 0.24);
+    panel.visible = k > 0;
+    panel.scale.setScalar(1 + 0.5 * k);
+    panelMat.color.copy(PANEL_BASE).lerp(ENEMY_WHITE, Math.min(1, k + 0.35));
+    panelMat.opacity = 0.25 + 0.7 * k;
+    if (panelPop <= 0) panel.visible = false;
+  } else if (panelAlive) {
+    panelZ -= enemySpeed * dt;
+    if (panelZ <= 0.5) {
+      panelAlive = false;
+      panel.visible = false;
+    } else panel.position.set(panelX, 0.85, -panelZ);
+  }
+  if (!gameOver && foesAlive <= 0 && waveWait <= 0) endWave();
+}
+function syncEnemyTags() {
+  for (let i = 0; i < ENEMY_N; i++) {
+    const en = enemies[i];
+    en.tag.visible = hpNumbers && en.alive && en.pop <= 0 && v09On;
+  }
+}
+banner.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+banner.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (gameOver) restartV09();
+});
+
 // 1-unit lineup marker (Unity z=6). Off until the TUNE checkbox is enabled.
 const MARKER_IDLE = 0xfff4c2, MARKER_OK = 0x3dff7a;
 const marker = new THREE.Mesh(new THREE.BoxGeometry(1, 0.05, 0.28),
@@ -221,7 +492,10 @@ function updateMarker(dt) {
 const GATE_H = 2, GATE_D = 0.2, GATE_Y = 1, GATE_SPREAD = 0.35;
 const TRACK_LIM = CFG.track.width / 2;
 let gateFx = true;
-let m2On = true;
+let m2On = false;
+let v09On = true;
+let enemySpeed = 2;
+let hpNumbers = false;
 function labelTexture(text) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256;
   const g = c.getContext('2d');
@@ -276,6 +550,15 @@ function placeGate(g, x, z, w, active) {
   restOne(g);
 }
 function applyM2() {
+  bPassed.fill(0);
+  if (v09On) {
+    for (let i = 0; i < gates.length; i++) {
+      gates[i].active = false;
+      gates[i].group.visible = false;
+      restOne(gates[i]);
+    }
+    return;
+  }
   if (m2On) {
     placeGate(gates[0], -1.75, 10, 3.5, true); // +3 left
     placeGate(gates[1], 1.75, 10, 3.5, true);  // -2 right
@@ -285,7 +568,6 @@ function applyM2() {
     placeGate(gates[1], 1.75, 10, 3.5, false);
     placeGate(gates[2], CFG.gate.x, CFG.gate.z, CFG.gate.w, true); // v0.7 x2 only
   }
-  bPassed.fill(0);
 }
 function punchGate(g) {
   if (!gateFx) return;
@@ -411,7 +693,7 @@ canvas.addEventListener('lostpointercapture', endPointer);
 function eventInTuneUi(e) {
   const n = e.target;
   const el = n && n.nodeType === 1 ? n : n && n.parentElement;
-  return !!(el && el.closest && el.closest('#actions, #tune-panel'));
+  return !!(el && el.closest && el.closest('#actions, #tune-panel, #banner'));
 }
 const block = (e) => {
   if (e.type.startsWith('touch') && eventInTuneUi(e)) return;
@@ -437,6 +719,10 @@ const inTouchSmooth = document.getElementById('in-touchSmooth');
 const inGateFx = document.getElementById('in-gateFx');
 const inMarker = document.getElementById('in-marker');
 const inM2 = document.getElementById('in-m2');
+const inV09 = document.getElementById('in-v09');
+const inHpNum = document.getElementById('in-hpnum');
+const inEspeed = document.getElementById('in-espeed');
+const outEspeed = document.getElementById('out-espeed');
 const outSensitivity = document.getElementById('out-sensitivity');
 const outSmoothK = document.getElementById('out-smoothK');
 const outClampX = document.getElementById('out-clampX');
@@ -457,6 +743,7 @@ function persistTune() {
   try {
     localStorage.setItem(TUNE_KEY, JSON.stringify({
       sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx, marker: markerOn, m2: m2On,
+      v09: v09On, hpNumbers, enemySpeed,
     }));
   } catch (_) {}
 }
@@ -474,6 +761,10 @@ function loadTune() {
   if (typeof saved.gateFx === 'boolean') gateFx = saved.gateFx;
   markerOn = saved.marker === true;
   if (typeof saved.m2 === 'boolean') m2On = saved.m2;
+  if (typeof saved.v09 === 'boolean') v09On = saved.v09;
+  hpNumbers = saved.hpNumbers === true;
+  const sp = quantize(saved.enemySpeed, 0.5, 8, 0.1);
+  if (sp != null) enemySpeed = sp;
 }
 function constrainTarget() {
   if (targetX > CFG.clampX || targetX < -CFG.clampX) {
@@ -489,6 +780,10 @@ function syncTuneUi() {
   inGateFx.checked = gateFx;
   inMarker.checked = markerOn;
   inM2.checked = m2On;
+  inV09.checked = v09On;
+  inHpNum.checked = hpNumbers;
+  inEspeed.value = String(enemySpeed);
+  outEspeed.textContent = enemySpeed.toFixed(1);
   outSensitivity.textContent = formatTune(CFG.sensitivity);
   outSmoothK.textContent = formatTune(CFG.smoothK);
   outClampX.textContent = formatTune(CFG.clampX);
@@ -507,6 +802,11 @@ loadTune();
 constrainTarget();
 syncTuneUi();
 applyM2();
+if (v09On) {
+  wall.visible = false;
+  hitLabel.visible = false;
+  spawnWave();
+} else { wall.visible = true; hitLabel.visible = true; }
 if (markerOn) placeMarker();
 tuneBtn.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
 tuneBtn.addEventListener('click', (e) => {
@@ -542,6 +842,36 @@ inM2.addEventListener('change', () => {
   applyM2();
   persistTune();
 });
+inEspeed.addEventListener('input', () => {
+  const v = quantize(inEspeed.value, 0.5, 8, 0.1);
+  if (v == null) return;
+  enemySpeed = v;
+  outEspeed.textContent = v.toFixed(1);
+  persistTune();
+});
+inHpNum.addEventListener('change', () => {
+  hpNumbers = inHpNum.checked;
+  syncEnemyTags();
+  persistTune();
+});
+inV09.addEventListener('change', () => {
+  v09On = inV09.checked;
+  gameOver = false;
+  waveWait = 0;
+  hideBanner();
+  if (v09On) {
+    shooterHp = 100; shooters = 1; wave = 1; hpFlash = 0;
+    wall.visible = false; hitLabel.visible = false;
+    spawnWave();
+  } else {
+    clearEnemies();
+    wall.visible = true; hitLabel.visible = true;
+    shooters = 1;
+  }
+  applyM2();
+  paintHud();
+  persistTune();
+});
 document.getElementById('tune-reset').addEventListener('click', (e) => {
   e.stopPropagation();
   CFG.sensitivity = 11;
@@ -552,10 +882,20 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   markerOn = false;
   marker.visible = false;
   markerHold = 0; markerGreen = 0; markerLast = null; markerSum = 0; markerN = 0;
-  m2On = true;
+  m2On = false;
+  v09On = true;
+  enemySpeed = 2;
+  hpNumbers = false;
+  shooterHp = 100;
+  shooters = 1;
+  wave = 1;
+  gameOver = false;
+  waveWait = 0;
   moveSamples.length = 0;
   syncTuneUi();
   applyM2();
+  if (v09On) restartV09();
+  else { clearEnemies(); wall.visible = true; hitLabel.visible = true; }
   paintHud();
   try { localStorage.removeItem(TUNE_KEY); } catch (_) {}
 });
@@ -614,11 +954,21 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.8\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms\nbullets ${count}/${N}  units ${count}\nhits ${hits}  hits/s ${hitsPerSec.toFixed(1)}`;
-  if (markerOn) {
-    const last = markerLast == null ? '—' : markerLast.toFixed(2) + 's';
-    const avg = markerN ? (markerSum / markerN).toFixed(2) + 's' : '—';
-    text += `  align ${last}  avg ${avg}`;
+    let text = `v0.9\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+  if (v09On) {
+    text += `\nwave ${wave}  HP ${shooterHp}\nshooters ${shooters}  pool ${count}`;
+    if (markerOn) {
+      const last = markerLast == null ? '—' : markerLast.toFixed(2) + 's';
+      const avg = markerN ? (markerSum / markerN).toFixed(2) + 's' : '—';
+      text += `\nalign ${last}  avg ${avg}`;
+    }
+  } else {
+    text += `\nbullets ${count}/${N}  units ${count}\nhits ${hits}  hits/s ${hitsPerSec.toFixed(1)}`;
+    if (markerOn) {
+      const last = markerLast == null ? '—' : markerLast.toFixed(2) + 's';
+      const avg = markerN ? (markerSum / markerN).toFixed(2) + 's' : '—';
+      text += `  align ${last}  avg ${avg}`;
+    }
   }
   hud.textContent = text;
   const clearNow = wallClearPx();
@@ -635,19 +985,30 @@ function frame(now) {
 
   // Steering
   x += (targetX - x) * (1 - Math.exp(-CFG.smoothK * dt));
-  cannon.position.x = x;
+  layoutCannons();
   unitLabel.position.x = x;
   updateMarker(dt);
+  if (hpFlash > 0) hpFlash = Math.max(0, hpFlash - dt);
+  updateV09(dt);
 
   // Auto-fire (accumulator keeps exact 8/s regardless of frame rate)
   fireAcc += dt;
   const interval = 1 / CFG.fireRate;
-  while (fireAcc >= interval) {
-    fireAcc -= interval;
-    // bullet already travelled for fireAcc seconds since its exact spawn time
-    spawn(x, CFG.muzzleZ + CFG.bulletSpeed * fireAcc, fireAcc, 0);
-    shots++;
-  }
+  const firing = !(v09On && gameOver);
+  if (firing) {
+    while (fireAcc >= interval) {
+      fireAcc -= interval;
+      const n = v09On ? shooters : 1;
+      const half = 0.5 + (n - 1) * 0.3;
+      const lim = TRACK_LIM - half;
+      const cx = v09On ? Math.max(-lim, Math.min(lim, x)) : x;
+      for (let s = 0; s < n; s++) {
+        const ox = v09On ? (s - (n - 1) / 2) * 0.6 : 0;
+        spawn(cx + ox, CFG.muzzleZ + CFG.bulletSpeed * fireAcc, fireAcc, 0);
+      }
+      shots++;
+    }
+  } else fireAcc = 0;
 
   // Move bullets, gates (swept on z), wall hit, expire. Copies come from the pool.
   const step = CFG.bulletSpeed * dt;
@@ -657,30 +1018,59 @@ function frame(now) {
     const z1 = z0 + step;
     bz[i] = z1; bAge[i] += dt;
     const px = bx[i];
-    for (let gi = 0; gi < gates.length; gi++) {
-      const g = gates[gi];
-      if (!g.active || (bPassed[i] & g.bit)) continue;
-      if (z1 < g.z0 || z0 > g.z1 || px < g.x0 || px > g.x1) continue;
-      bPassed[i] |= g.bit;
-      if (g.op === '-') {
-        if (g.debt < g.value) { g.debt++; bAge[i] = CFG.bulletLife; punchGate(g); break; }
-        g.debt = 0; // 1 survivor per N+1 bullets
-        continue;
+    if (v09On) {
+      if (bAge[i] < CFG.bulletLife) {
+        const hitR = ENEMY_R + CFG.bulletRadius;
+        for (let e = 0; e < ENEMY_N; e++) {
+          const en = enemies[e];
+          if (!en.alive || en.pop > 0) continue;
+          if (px < en.x - hitR || px > en.x + hitR) continue;
+          if (z1 < en.z - hitR || z0 > en.z + hitR) continue;
+          en.hp -= 1;
+          en.flash = 0.12;
+          if (en.hp <= 0) {
+            en.pop = 0.2;
+            foesAlive--;
+          } else if (hpNumbers) paintEnemyHp(en);
+          bAge[i] = CFG.bulletLife;
+          break;
+        }
       }
-      const extras = g.op === '+' ? g.value : g.value - 1;
-      const passed = bPassed[i], age = bAge[i];
-      for (let k = 1; k <= extras; k++) {
-        let cx = px + copySign * GATE_SPREAD * k;
-        if (cx > TRACK_LIM) cx = TRACK_LIM;
-        else if (cx < -TRACK_LIM) cx = -TRACK_LIM;
-        spawn(cx, z1, age, passed);
-        copySign = -copySign;
+      if (bAge[i] < CFG.bulletLife && panelAlive) {
+        const hw = 0.75, hd = 0.18;
+        if (px >= panelX - hw && px <= panelX + hw && z1 >= panelZ - hd && z0 <= panelZ + hd) {
+          panelHp--;
+          paintPanelHp();
+          bAge[i] = CFG.bulletLife;
+          if (panelHp <= 0) breakPanel();
+        }
       }
-      punchGate(g);
-    }
-    if (bAge[i] < CFG.bulletLife && z1 >= wz0 && z0 <= wz1 && px >= wx0 && px <= wx1) {
-      bAge[i] = CFG.bulletLife;
-      frameHits++;
+    } else {
+      for (let gi = 0; gi < gates.length; gi++) {
+        const g = gates[gi];
+        if (!g.active || (bPassed[i] & g.bit)) continue;
+        if (z1 < g.z0 || z0 > g.z1 || px < g.x0 || px > g.x1) continue;
+        bPassed[i] |= g.bit;
+        if (g.op === '-') {
+          if (g.debt < g.value) { g.debt++; bAge[i] = CFG.bulletLife; punchGate(g); break; }
+          g.debt = 0; // 1 survivor per N+1 bullets
+          continue;
+        }
+        const extras = g.op === '+' ? g.value : g.value - 1;
+        const passed = bPassed[i], age = bAge[i];
+        for (let k = 1; k <= extras; k++) {
+          let cx = px + copySign * GATE_SPREAD * k;
+          if (cx > TRACK_LIM) cx = TRACK_LIM;
+          else if (cx < -TRACK_LIM) cx = -TRACK_LIM;
+          spawn(cx, z1, age, passed);
+          copySign = -copySign;
+        }
+        punchGate(g);
+      }
+      if (bAge[i] < CFG.bulletLife && z1 >= wz0 && z0 <= wz1 && px >= wx0 && px <= wx1) {
+        bAge[i] = CFG.bulletLife;
+        frameHits++;
+      }
     }
   }
   for (let i = count - 1; i >= 0; i--) if (bAge[i] >= CFG.bulletLife) kill(i);
@@ -724,6 +1114,7 @@ function frame(now) {
   bulletMesh.count = count;
   bulletMesh.instanceMatrix.needsUpdate = true;
 
+  layoutCannons();
   renderer.render(scene, camera);
 
   // FPS readout

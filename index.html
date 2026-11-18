@@ -37,13 +37,20 @@
     border:1px solid rgba(160,200,255,.4); border-radius:6px; padding:6px 10px; touch-action:manipulation; }
   #reset-hits { display:block; width:100%; margin-top:6px; }
   #safe-bottom { position:fixed; left:0; bottom:0; width:0; height:env(safe-area-inset-bottom); pointer-events:none; visibility:hidden; }
+  #banner { position:fixed; left:50%; top:46%; transform:translate(-50%,-50%); z-index:6;
+    max-width:min(320px, calc(100vw - 32px)); text-align:center;
+    font:700 20px/1.35 system-ui, sans-serif; color:#fff; background:rgba(5,20,45,.82);
+    border:1px solid rgba(160,200,255,.55); border-radius:10px; padding:14px 16px; touch-action:manipulation; }
+  #banner[hidden] { display:none; }
+  #banner.over { pointer-events:auto; }
+  #banner.clear { pointer-events:none; }
   #hint { position:fixed; bottom:calc(env(safe-area-inset-bottom) + 18px); left:0; right:0; text-align:center;
     font:600 15px system-ui, sans-serif; color:rgba(207,230,255,.75); pointer-events:none; transition:opacity .6s; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="hud">v0.8</div>
+<div id="hud">v0.9</div>
 <div id="actions">
   <button id="tune" type="button" aria-expanded="false" aria-controls="tune-panel">TUNE</button>
   <button id="toggle" type="button">FPS</button>
@@ -58,16 +65,22 @@
   <label>Edge clamp <output id="out-clampX">3.5</output>
     <input id="in-clampX" type="range" min="2.5" max="3.5" step="0.1" value="3.5">
   </label>
+  <label>Enemy speed <output id="out-espeed">2.0</output>
+    <input id="in-espeed" type="range" min="0.5" max="8" step="0.1" value="2">
+  </label>
   <div id="tune-foot">
     <label class="tune-check"><input id="in-touchSmooth" type="checkbox"> Touch smoothing</label>
     <button id="tune-reset" type="button">Reset</button>
   </div>
   <label class="tune-check"><input id="in-gateFx" type="checkbox" checked> Gate FX</label>
   <label class="tune-check"><input id="in-marker" type="checkbox"> Marker</label>
-  <label class="tune-check"><input id="in-m2" type="checkbox" checked> M2 gates</label>
+  <label class="tune-check"><input id="in-m2" type="checkbox"> M2 gates</label>
+  <label class="tune-check"><input id="in-v09" type="checkbox" checked> v0.9 enemies</label>
+  <label class="tune-check"><input id="in-hpnum" type="checkbox"> HP numbers</label>
   <button id="reset-hits" type="button">Reset hits</button>
 </div>
 <div id="safe-bottom" aria-hidden="true"></div>
+<div id="banner" hidden></div>
 <div id="hint">Drag left / right anywhere to steer</div>
 <script type="module" src="./main.js"></script>
 </body>

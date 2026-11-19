@@ -147,11 +147,27 @@ for (const sx of [-1, 1]) {
   scene.add(new THREE.Line(geo, edgeMat));
 }
 
-// Cannon: 1x1x1 cube at y 0.5, with outline
-const cannon = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshLambertMaterial({ color: 0xf2f6ff }));
-cannon.position.set(0, 0.5, 0);
-cannon.add(new THREE.LineSegments(new THREE.EdgesGeometry(cannon.geometry), new THREE.LineBasicMaterial({ color: 0x0b2a5b })));
-scene.add(cannon);
+// Narrow cannon: body + barrel + lit muzzle, so four of them stay separate.
+const CANNON_W = 0.34;
+const CANNON_GAP = 0.82; // centre spacing; gap between bodies is about 0.48
+function makeCannon() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(CANNON_W, 0.46, 0.4),
+    new THREE.MeshLambertMaterial({ color: 0xf7f9ff }));
+  body.position.set(0, 0.23, 0.02);
+  body.add(new THREE.LineSegments(new THREE.EdgesGeometry(body.geometry), new THREE.LineBasicMaterial({ color: 0x142033 })));
+  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.46),
+    new THREE.MeshLambertMaterial({ color: 0x243044 }));
+  barrel.position.set(0, 0.32, -0.32); // toward the enemies (three.js -z)
+  const muzzle = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.08),
+    new THREE.MeshBasicMaterial({ color: 0x8ef6ff }));
+  muzzle.position.set(0, 0.32, -0.58);
+  g.add(body, barrel, muzzle);
+  scene.add(g);
+  return g;
+}
+const cannons = [makeCannon(), makeCannon(), makeCannon(), makeCannon()];
+for (let i = 1; i < 4; i++) cannons[i].visible = false;
 
 // Live-unit count floating just above the cannon. Texture updates at most 10/s.
 const unitCanvas = document.createElement('canvas');
@@ -177,14 +193,7 @@ function paintUnits(n) {
 }
 paintUnits(0);
 
-// Extra cannons (v0.9). Index 0 is the original mesh. Spacing 0.6, group clamped to the track.
-const cannons = [cannon];
-for (let i = 1; i < 4; i++) {
-  const extra = cannon.clone();
-  extra.visible = false;
-  scene.add(extra);
-  cannons.push(extra);
-}
+// Cannon groups are created above. Spacing is CANNON_GAP.
 const HP_OK = new THREE.Color(0x3dff7a);
 const HP_RED = new THREE.Color(0xff4d4d);
 const hpMat = new THREE.MeshBasicMaterial({ color: HP_OK });
@@ -208,12 +217,12 @@ for (let i = 0; i < ENEMY_N; i++) {
   mesh.visible = false;
   scene.add(mesh);
   const cnv = document.createElement('canvas');
-  cnv.width = 128; cnv.height = 64;
+  cnv.width = 256; cnv.height = 128;
   const ctx = cnv.getContext('2d');
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   const tex = new THREE.CanvasTexture(cnv);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const tag = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.22),
+  const tag = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.58),
     new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
   tag.visible = false;
   tag.renderOrder = 3;
@@ -222,29 +231,61 @@ for (let i = 0; i < ENEMY_N; i++) {
 }
 function paintEnemyHp(en) {
   const g = en.ctx;
-  g.clearRect(0, 0, 128, 64);
-  g.font = '900 48px system-ui, -apple-system, Helvetica, Arial, sans-serif';
-  g.lineWidth = 8; g.strokeStyle = '#0b2a5b'; g.fillStyle = '#ffffff';
-  g.strokeText(String(en.hp), 64, 34);
-  g.fillText(String(en.hp), 64, 34);
+  g.clearRect(0, 0, 256, 128);
+  g.font = '900 108px system-ui, -apple-system, Helvetica, Arial, sans-serif';
+  g.lineWidth = 18; g.strokeStyle = '#06101f'; g.fillStyle = '#ffffff';
+  g.strokeText(String(en.hp), 128, 68);
+  g.fillText(String(en.hp), 128, 68);
   en.tex.needsUpdate = true;
+}
+function placeHpTag(en, shrink) {
+  const h = window.innerHeight || 932;
+  const y0 = screenY(0, -en.z, h);
+  const y1 = screenY(1, -en.z, h);
+  const px = Math.abs(y1 - y0) || 1;
+  const worldH = Math.min(1.7, Math.max(0.7, 46 / px));
+  const s = worldH / 0.58;
+  en.tag.scale.set(s, s, 1);
+  en.tag.position.set(en.x, ENEMY_R * shrink + worldH * 0.62, -en.z + 0.12);
+  en.tag.visible = true;
 }
 
 // +1 panel. Wave 1 sits at x=-0.2 so the centre lane can reach it; later waves vary in [-1.5, 1.5].
 const PANEL_BASE = new THREE.Color(0x7cc8ff);
 const PANEL_DARK = new THREE.Color(0x1a3358);
-const PANEL_HITS = 6;
+const PANEL_HITS = 10;
+function bullseyeTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#1a120e';
+  g.fillRect(0, 0, 256, 256);
+  const rings = ['#e10600', '#f4f4f4', '#e10600', '#f4f4f4', '#111111'];
+  for (let i = 0; i < rings.length; i++) {
+    g.fillStyle = rings[i];
+    g.beginPath();
+    g.arc(128, 128, 118 - i * 22, 0, Math.PI * 2);
+    g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
 const panelCanvas = document.createElement('canvas');
-panelCanvas.width = 256; panelCanvas.height = 128;
+panelCanvas.width = 512; panelCanvas.height = 256;
 const panelCtx = panelCanvas.getContext('2d');
 panelCtx.textAlign = 'center'; panelCtx.textBaseline = 'middle';
 const panelTex = new THREE.CanvasTexture(panelCanvas);
 panelTex.colorSpace = THREE.SRGBColorSpace;
-const panelMat = new THREE.MeshBasicMaterial({ color: PANEL_BASE, transparent: true, opacity: 0.9 });
-const panel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.15, 0.22), panelMat);
-const panelTag = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.45),
+const panelMat = new THREE.MeshLambertMaterial({ color: 0x2a2420 });
+const panel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.2, 0.22), panelMat);
+const panelFaceMat = new THREE.MeshBasicMaterial({ map: bullseyeTexture(), color: 0xffffff });
+const panelFace = new THREE.Mesh(new THREE.PlaneGeometry(1.28, 1.05), panelFaceMat);
+panelFace.position.set(0, 0, 0.12);
+panel.add(panelFace);
+const panelTag = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.9),
   new THREE.MeshBasicMaterial({ map: panelTex, transparent: true, depthWrite: false }));
-panelTag.position.set(0, 0, 0.13);
+panelTag.position.set(0, 0, 0.16);
 panel.add(panelTag);
 panel.visible = false;
 scene.add(panel);
@@ -264,28 +305,37 @@ function panelXFor(w) {
   return Math.round((-1.5 + f * 3) * 100) / 100;
 }
 function paintPanelHp() {
-  panelCtx.clearRect(0, 0, 256, 128);
-  panelCtx.font = '900 92px system-ui, -apple-system, Helvetica, Arial, sans-serif';
-  panelCtx.lineWidth = 12; panelCtx.strokeStyle = '#0b2a5b'; panelCtx.fillStyle = '#ffffff';
-  panelCtx.strokeText(String(Math.max(0, panelHp)), 128, 68);
-  panelCtx.fillText(String(Math.max(0, panelHp)), 128, 68);
+  const g = panelCtx;
+  g.clearRect(0, 0, 512, 256);
+  g.fillStyle = 'rgba(6, 8, 14, 0.88)';
+  g.beginPath();
+  g.arc(256, 128, 108, 0, Math.PI * 2);
+  g.fill();
+  g.font = '900 188px system-ui, -apple-system, Helvetica, Arial, sans-serif';
+  g.lineWidth = 22; g.strokeStyle = '#05070c'; g.fillStyle = '#ffffff';
+  g.strokeText(String(Math.max(0, panelHp)), 256, 142);
+  g.fillText(String(Math.max(0, panelHp)), 256, 142);
   panelTex.needsUpdate = true;
   const k = (PANEL_HITS - panelHp) / PANEL_HITS;
-  panelMat.color.copy(PANEL_BASE).lerp(PANEL_DARK, k);
-  panelMat.opacity = 0.92 - 0.35 * k;
+  panelFaceMat.color.setScalar(1 - 0.55 * k);
+}
+function cannonXs(n, center) {
+  const half = CANNON_W / 2 + (n - 1) * CANNON_GAP / 2;
+  const lim = TRACK_LIM - half;
+  const cx = Math.max(-lim, Math.min(lim, center));
+  const xs = [];
+  for (let i = 0; i < n; i++) xs.push(cx + (i - (n - 1) / 2) * CANNON_GAP);
+  return xs;
 }
 function layoutCannons() {
   const n = v09On ? shooters : 1;
-  const half = 0.5 + (n - 1) * 0.3;
-  const lim = TRACK_LIM - half;
-  const cx = Math.max(-lim, Math.min(lim, x));
+  const xs = cannonXs(n, x);
   for (let i = 0; i < 4; i++) {
-    const on = i < n && (v09On || i === 0);
+    const on = i < n;
     cannons[i].visible = on;
-    if (!on) continue;
-    const ox = v09On ? (i - (n - 1) / 2) * 0.6 : 0;
-    cannons[i].position.set(v09On ? cx + ox : x, 0.5, 0);
+    if (on) cannons[i].position.set(xs[i], 0, 0);
   }
+  const cx = xs[0] === undefined ? x : (xs[0] + xs[xs.length - 1]) / 2;
   hpBar.visible = v09On && !gameOver;
   if (v09On) {
     hpBar.position.set(cx, 0.08, 0.42);
@@ -317,7 +367,7 @@ function spawnWave() {
     en.mesh.position.set(en.x, ENEMY_R, -en.z);
     paintEnemyHp(en);
     en.tag.visible = hpNumbers;
-    en.tag.position.set(en.x, ENEMY_R + 0.48, -en.z + 0.05);
+    if (hpNumbers) placeHpTag(en, 1);
   }
   foesAlive = ENEMY_N;
   panelAlive = true; panelPop = 0; panelHp = PANEL_HITS;
@@ -417,7 +467,7 @@ function updateV09(dt) {
     } else en.mesh.material.color.copy(ENEMY_BLUE);
     en.mesh.position.set(en.x, ENEMY_R * shrink, -en.z);
     en.tag.visible = hpNumbers;
-    if (hpNumbers) en.tag.position.set(en.x, ENEMY_R * shrink + 0.46, -en.z + 0.08);
+    if (hpNumbers) placeHpTag(en, shrink);
   }
   if (panelPop > 0) {
     panelPop -= dt;
@@ -494,7 +544,7 @@ const TRACK_LIM = CFG.track.width / 2;
 let gateFx = true;
 let m2On = false;
 let v09On = true;
-let enemySpeed = 2;
+let enemySpeed = 4;
 let hpNumbers = false;
 function labelTexture(text) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256;
@@ -631,8 +681,8 @@ const N = CFG.maxBullets;
 const bx = new Float32Array(N), bz = new Float32Array(N), bAge = new Float32Array(N);
 const bPassed = new Uint8Array(N);   // bit flags: gate 0 passed
 let count = 0;                       // live bullets are indices [0, count)
-const bulletMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(CFG.bulletRadius, 12, 8),
-  new THREE.MeshLambertMaterial({ color: 0xffd447 }), N);
+const bulletMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 0.08, 0.4),
+  new THREE.MeshBasicMaterial({ color: 0xb8f7ff }), N);
 bulletMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 bulletMesh.count = 0;
 bulletMesh.frustumCulled = false;
@@ -884,7 +934,7 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   markerHold = 0; markerGreen = 0; markerLast = null; markerSum = 0; markerN = 0;
   m2On = false;
   v09On = true;
-  enemySpeed = 2;
+  enemySpeed = 4;
   hpNumbers = false;
   shooterHp = 100;
   shooters = 1;
@@ -954,7 +1004,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.9\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+    let text = `v0.10\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
   if (v09On) {
     text += `\nwave ${wave}  HP ${shooterHp}\nshooters ${shooters}  pool ${count}`;
     if (markerOn) {
@@ -999,12 +1049,9 @@ function frame(now) {
     while (fireAcc >= interval) {
       fireAcc -= interval;
       const n = v09On ? shooters : 1;
-      const half = 0.5 + (n - 1) * 0.3;
-      const lim = TRACK_LIM - half;
-      const cx = v09On ? Math.max(-lim, Math.min(lim, x)) : x;
+      const xs = cannonXs(n, x);
       for (let s = 0; s < n; s++) {
-        const ox = v09On ? (s - (n - 1) / 2) * 0.6 : 0;
-        spawn(cx + ox, CFG.muzzleZ + CFG.bulletSpeed * fireAcc, fireAcc, 0);
+        spawn(xs[s], CFG.muzzleZ + CFG.bulletSpeed * fireAcc, fireAcc, 0);
       }
       shots++;
     }

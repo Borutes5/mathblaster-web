@@ -148,8 +148,8 @@ for (const sx of [-1, 1]) {
 }
 
 // Narrow cannon: body + barrel + lit muzzle, so four of them stay separate.
-const CANNON_W = 0.34;
-const CANNON_GAP = 0.82; // centre spacing; gap between bodies is about 0.48
+const CANNON_W = 0.32;
+const CANNON_GAP = 0.45; // centre spacing; four cannons span about 1.7 of the 8-wide track
 function makeCannon() {
   const g = new THREE.Group();
   const body = new THREE.Mesh(new THREE.BoxGeometry(CANNON_W, 0.46, 0.4),
@@ -202,94 +202,119 @@ hpBar.position.set(0, 0.08, 0.4);
 hpBar.visible = false;
 scene.add(hpBar);
 
-// Tier-1 enemies. Fixed pool of 8, two staggered rows, no per-wave allocation.
-const ENEMY_N = 8;
-const ENEMY_R = 0.35;
-const ENEMY_HP = 3;
-const ENEMY_BLUE = new THREE.Color(0x3d8cff);
-const ENEMY_WHITE = new THREE.Color(0xffffff);
-const ENEMY_X = [-3.4, -2.55, -1.7, -1.0, 1.0, 1.7, 2.55, 3.4];
-const ENEMY_ROW = [0, 1, 0, 1, 0, 1, 0, 1]; // 0 = far z 39.3, 1 = near z 37.5
-const enemies = [];
-for (let i = 0; i < ENEMY_N; i++) {
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(ENEMY_R, 14, 10),
-    new THREE.MeshLambertMaterial({ color: ENEMY_BLUE }));
-  mesh.visible = false;
+// Enemies: one InstancedMesh per tier so a full board (~48) stays one draw each.
+const MAX_E = 64;
+const TIER_R = [0.3, 0.4, 0.55];
+const TIER_HP = [1, 3, 8];
+const TIER_LEAK = [5, 10, 25];
+const TIER_SLOW = [1, 1, 0.8];
+const TIER_COLOR = [new THREE.Color(0x3d8cff), new THREE.Color(0xffd24a), new THREE.Color(0xff4b4b)];
+const FLASH_WHITE = new THREE.Color(0xffffff);
+const _dummy = new THREE.Object3D();
+const _tint = new THREE.Color();
+function makeTierMesh(radius, color) {
+  const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(radius, 12, 8),
+    new THREE.MeshLambertMaterial({ color }), MAX_E);
+  mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_E * 3), 3);
+  mesh.count = 0;
+  mesh.frustumCulled = false;
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(mesh);
-  const cnv = document.createElement('canvas');
-  cnv.width = 256; cnv.height = 128;
-  const ctx = cnv.getContext('2d');
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  const tex = new THREE.CanvasTexture(cnv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const tag = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.58),
-    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
-  tag.visible = false;
-  tag.renderOrder = 3;
-  scene.add(tag);
-  enemies.push({ mesh, tag, ctx, tex, alive: false, x: 0, z: 0, hp: 0, flash: 0, pop: 0 });
+  return mesh;
 }
-function paintEnemyHp(en) {
-  const g = en.ctx;
-  g.clearRect(0, 0, 256, 128);
-  g.font = '900 108px system-ui, -apple-system, Helvetica, Arial, sans-serif';
-  g.lineWidth = 18; g.strokeStyle = '#06101f'; g.fillStyle = '#ffffff';
-  g.strokeText(String(en.hp), 128, 68);
-  g.fillText(String(en.hp), 128, 68);
-  en.tex.needsUpdate = true;
-}
-function placeHpTag(en, shrink) {
-  const h = window.innerHeight || 932;
-  const y0 = screenY(0, -en.z, h);
-  const y1 = screenY(1, -en.z, h);
-  const px = Math.abs(y1 - y0) || 1;
-  const worldH = Math.min(1.7, Math.max(0.7, 46 / px));
-  const s = worldH / 0.58;
-  en.tag.scale.set(s, s, 1);
-  en.tag.position.set(en.x, ENEMY_R * shrink + worldH * 0.62, -en.z + 0.12);
-  en.tag.visible = true;
-}
-
-// +1 panel. Wave 1 sits at x=-0.2 so the centre lane can reach it; later waves vary in [-1.5, 1.5].
-const PANEL_BASE = new THREE.Color(0x7cc8ff);
-const PANEL_DARK = new THREE.Color(0x1a3358);
-const PANEL_HITS = 10;
-function bullseyeTexture() {
+const tierMesh = [makeTierMesh(0.3, 0x3d8cff), makeTierMesh(0.4, 0xffd24a), makeTierMesh(0.55, 0xff4b4b)];
+function digitTexture(n) {
   const c = document.createElement('canvas');
-  c.width = c.height = 256;
+  c.width = 128; c.height = 160;
   const g = c.getContext('2d');
-  g.fillStyle = '#1a120e';
-  g.fillRect(0, 0, 256, 256);
-  const rings = ['#e10600', '#f4f4f4', '#e10600', '#f4f4f4', '#111111'];
-  for (let i = 0; i < rings.length; i++) {
-    g.fillStyle = rings[i];
-    g.beginPath();
-    g.arc(128, 128, 118 - i * 22, 0, Math.PI * 2);
-    g.fill();
-  }
+  g.font = '900 132px system-ui, -apple-system, Helvetica, Arial, sans-serif';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineWidth = 16; g.strokeStyle = '#06101f'; g.fillStyle = '#ffffff';
+  g.strokeText(String(n), 64, 86);
+  g.fillText(String(n), 64, 86);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
-const panelCanvas = document.createElement('canvas');
-panelCanvas.width = 512; panelCanvas.height = 256;
-const panelCtx = panelCanvas.getContext('2d');
-panelCtx.textAlign = 'center'; panelCtx.textBaseline = 'middle';
-const panelTex = new THREE.CanvasTexture(panelCanvas);
-panelTex.colorSpace = THREE.SRGBColorSpace;
-const panelMat = new THREE.MeshLambertMaterial({ color: 0x2a2420 });
-const panel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.2, 0.22), panelMat);
-const panelFaceMat = new THREE.MeshBasicMaterial({ map: bullseyeTexture(), color: 0xffffff });
-const panelFace = new THREE.Mesh(new THREE.PlaneGeometry(1.28, 1.05), panelFaceMat);
-panelFace.position.set(0, 0, 0.12);
-panel.add(panelFace);
-const panelTag = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.9),
-  new THREE.MeshBasicMaterial({ map: panelTex, transparent: true, depthWrite: false }));
-panelTag.position.set(0, 0, 0.16);
-panel.add(panelTag);
+const digitMesh = [];
+for (let d = 1; d <= 8; d++) {
+  const m = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.5, 0.64),
+    new THREE.MeshBasicMaterial({ map: digitTexture(d), transparent: true, depthWrite: false }), MAX_E);
+  m.count = 0;
+  m.frustumCulled = false;
+  m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  m.renderOrder = 3;
+  scene.add(m);
+  digitMesh.push(m);
+}
+const enemies = [];
+for (let i = 0; i < MAX_E; i++) {
+  enemies.push({ active: false, tier: 0, hp: 0, maxHp: 1, x: 0, z: 0, flash: 0, pop: 0 });
+}
+
+// Glass upgrade panel. No frame, no hit counter: the label is the operation, cracks show damage.
+const PANEL_HITS = 10;
+const PANEL_OPS = [
+  { id: '-1', text: '-1', good: false },
+  { id: 'div2', text: '÷2', good: false },
+  { id: '+1', text: '+1', good: true },
+  { id: 'x2', text: 'x2', good: true },
+];
+function glassFresnelTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(128, 96, 20, 128, 128, 150);
+  grd.addColorStop(0, 'rgba(255,255,255,0.02)');
+  grd.addColorStop(0.62, 'rgba(210,245,255,0.18)');
+  grd.addColorStop(1, 'rgba(255,255,255,0.95)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const crackCanvas = document.createElement('canvas');
+crackCanvas.width = crackCanvas.height = 256;
+const crackCtx = crackCanvas.getContext('2d');
+const crackTex = new THREE.CanvasTexture(crackCanvas);
+crackTex.colorSpace = THREE.SRGBColorSpace;
+const labelCanvas = document.createElement('canvas');
+labelCanvas.width = 512; labelCanvas.height = 256;
+const labelCtx = labelCanvas.getContext('2d');
+labelCtx.textAlign = 'center'; labelCtx.textBaseline = 'middle';
+const labelTex = new THREE.CanvasTexture(labelCanvas);
+labelTex.colorSpace = THREE.SRGBColorSpace;
+const glassMat = new THREE.MeshBasicMaterial({ color: 0xd9f6ff, transparent: true, opacity: 0.35, depthWrite: false });
+const fresnelMat = new THREE.MeshBasicMaterial({ map: glassFresnelTexture(), transparent: true, opacity: 0.42, depthWrite: false });
+const crackMat = new THREE.MeshBasicMaterial({ map: crackTex, transparent: true, depthWrite: false });
+const labelMat = new THREE.MeshBasicMaterial({ map: labelTex, transparent: true, depthWrite: false });
+const panel = new THREE.Group();
+const panelGlass = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.25, 0.1), glassMat);
+const panelFresnel = new THREE.Mesh(new THREE.PlaneGeometry(1.62, 1.18), fresnelMat);
+panelFresnel.position.z = 0.055;
+const panelCracks = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.08), crackMat);
+panelCracks.position.z = 0.06;
+const panelLabel = new THREE.Mesh(new THREE.PlaneGeometry(1.58, 0.92), labelMat);
+panelLabel.position.z = 0.07;
+panel.add(panelGlass, panelFresnel, panelCracks, panelLabel);
 panel.visible = false;
 scene.add(panel);
-let panelAlive = false, panelX = 0, panelZ = 20, panelHp = PANEL_HITS, panelPop = 0;
+const SHARDS = 6;
+const shardMeshes = [];
+const shardVX = new Float32Array(SHARDS), shardVY = new Float32Array(SHARDS), shardVZ = new Float32Array(SHARDS);
+const shardLife = new Float32Array(SHARDS);
+for (let i = 0; i < SHARDS; i++) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0xd7f4ff, transparent: true, opacity: 0.55, depthWrite: false });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.16), mat);
+  m.visible = false;
+  scene.add(m);
+  shardMeshes.push(m);
+}
+let panelAlive = false, panelX = 0, panelZ = 20, panelHp = PANEL_HITS, panelCrack = 0;
+let panelType = PANEL_OPS[2];
+let wNeg = 35, wDiv = 25, wPlus = 25, wMul = 15;
+let speedRamp = 0.15;
 
 let shooters = 1, shooterHp = 100, wave = 1, waveWait = 0, gameOver = false, hpFlash = 0, foesAlive = 0;
 const banner = document.getElementById('banner');
@@ -299,25 +324,64 @@ function showBanner(text, over) {
   banner.className = over ? 'over' : 'clear';
 }
 function hideBanner() { banner.hidden = true; banner.textContent = ''; }
-function panelXFor(w) {
-  if (w <= 1) return -0.2;
-  const f = (w * 0.61803398875) % 1;
-  return Math.round((-1.5 + f * 3) * 100) / 100;
+function hash01(n) {
+  let s = n >>> 0;
+  s = Math.imul(s ^ (s >>> 16), 0x7feb352d);
+  s = Math.imul(s ^ (s >>> 15), 0x846ca68b);
+  s = (s ^ (s >>> 16)) >>> 0;
+  return s / 4294967296;
 }
-function paintPanelHp() {
-  const g = panelCtx;
+function panelXFor(w) {
+  return Math.round((-3 + hash01(w * 97 + 13) * 6) * 100) / 100;
+}
+function pickPanel(w) {
+  const weights = [wNeg, wDiv, wPlus, wMul];
+  let sum = 0;
+  for (let i = 0; i < 4; i++) sum += Math.max(0, weights[i]);
+  if (sum <= 0) return PANEL_OPS[2];
+  let r = hash01(w * 53 + 7) * sum;
+  for (let i = 0; i < 4; i++) {
+    r -= Math.max(0, weights[i]);
+    if (r <= 0) return PANEL_OPS[i];
+  }
+  return PANEL_OPS[3];
+}
+function paintPanelLabel(text, good) {
+  const g = labelCtx;
   g.clearRect(0, 0, 512, 256);
-  g.fillStyle = 'rgba(6, 8, 14, 0.88)';
-  g.beginPath();
-  g.arc(256, 128, 108, 0, Math.PI * 2);
-  g.fill();
-  g.font = '900 188px system-ui, -apple-system, Helvetica, Arial, sans-serif';
-  g.lineWidth = 22; g.strokeStyle = '#05070c'; g.fillStyle = '#ffffff';
-  g.strokeText(String(Math.max(0, panelHp)), 256, 142);
-  g.fillText(String(Math.max(0, panelHp)), 256, 142);
-  panelTex.needsUpdate = true;
-  const k = (PANEL_HITS - panelHp) / PANEL_HITS;
-  panelFaceMat.color.setScalar(1 - 0.55 * k);
+  g.font = '900 210px system-ui, -apple-system, Helvetica, Arial, sans-serif';
+  g.lineWidth = 26;
+  g.strokeStyle = '#061018';
+  g.fillStyle = good ? '#c8ffd8' : '#ffb4b4';
+  g.strokeText(text, 256, 140);
+  g.fillText(text, 256, 140);
+  labelTex.needsUpdate = true;
+}
+function paintCracks(stage) {
+  const g = crackCtx;
+  g.clearRect(0, 0, 256, 256);
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+  g.strokeStyle = 'rgba(8, 16, 28, 0.95)';
+  g.lineWidth = 11;
+  const sets = [
+    [[36, 48], [150, 120], [70, 210]],
+    [[200, 36], [90, 150], [190, 220]],
+    [[24, 140], [230, 90], [120, 230]],
+  ];
+  for (let s = 0; s < stage && s < 3; s++) {
+    g.beginPath();
+    g.moveTo(sets[s][0][0], sets[s][0][1]);
+    for (let k = 1; k < sets[s].length; k++) g.lineTo(sets[s][k][0], sets[s][k][1]);
+    g.stroke();
+  }
+  crackTex.needsUpdate = true;
+}
+function applyPanelOp(id) {
+  if (id === '+1') shooters = Math.min(4, shooters + 1);
+  else if (id === '-1') shooters = Math.max(1, shooters - 1);
+  else if (id === 'x2') shooters = Math.min(4, shooters * 2);
+  else if (id === 'div2') shooters = Math.max(1, Math.floor(shooters / 2));
 }
 function cannonXs(n, center) {
   const half = CANNON_W / 2 + (n - 1) * CANNON_GAP / 2;
@@ -344,39 +408,70 @@ function layoutCannons() {
   }
   unitLabel.visible = !v09On;
 }
+function waveRows(w) { return Math.min(8, 6 + Math.floor((w - 1) / 5)); }
+function mixAt(w) {
+  const t = Math.min(1, Math.max(0, (w - 1) / 14));
+  return { s: 0.85 + (0.60 - 0.85) * t, m: 0.15 + (0.30 - 0.15) * t, l: 0.10 * t };
+}
+function waveSpeed() {
+  return Math.min(8, enemySpeed + speedRamp * Math.max(0, wave - 1));
+}
 function clearEnemies() {
-  for (let i = 0; i < ENEMY_N; i++) {
+  for (let i = 0; i < MAX_E; i++) {
     const en = enemies[i];
-    en.alive = false; en.pop = 0; en.flash = 0;
-    en.mesh.visible = false; en.tag.visible = false;
+    en.active = false; en.pop = 0; en.flash = 0;
   }
   foesAlive = 0;
-  panelAlive = false; panelPop = 0; panel.visible = false;
+  panelAlive = false;
+  panel.visible = false;
+  for (let i = 0; i < SHARDS; i++) { shardLife[i] = 0; shardMeshes[i].visible = false; }
+  for (let t = 0; t < 3; t++) tierMesh[t].count = 0;
+  for (let d = 0; d < 8; d++) digitMesh[d].count = 0;
 }
 function spawnWave() {
   clearEnemies();
-  for (let i = 0; i < ENEMY_N; i++) {
-    const en = enemies[i];
-    en.alive = true; en.pop = 0; en.flash = 0;
-    en.hp = ENEMY_HP;
-    en.x = ENEMY_X[i];
-    en.z = ENEMY_ROW[i] ? 37.5 : 39.3;
-    en.mesh.visible = true;
-    en.mesh.scale.setScalar(1);
-    en.mesh.material.color.copy(ENEMY_BLUE);
-    en.mesh.position.set(en.x, ENEMY_R, -en.z);
-    paintEnemyHp(en);
-    en.tag.visible = hpNumbers;
-    if (hpNumbers) placeHpTag(en, 1);
+  const rows = waveRows(wave);
+  const mix = mixAt(wave);
+  const rnd = (() => {
+    let a = (wave * 9973 + 17) >>> 0;
+    return () => {
+      a = (Math.imul(a, 1664525) + 1013904223) >>> 0;
+      return a / 4294967296;
+    };
+  })();
+  const zFront = 40 - (rows - 1);
+  let n = 0;
+  for (let r = 0; r < rows; r++) {
+    const stagger = r % 2 === 1;
+    const count = stagger ? 5 : 6;
+    const xs = stagger ? [-2.8, -1.4, 0, 1.4, 2.8] : [-3.5, -2.1, -0.7, 0.7, 2.1, 3.5];
+    for (let i = 0; i < count && n < MAX_E; i++) {
+      const u = rnd();
+      let tier = 0;
+      if (u > mix.s + mix.m) tier = 2;
+      else if (u > mix.s) tier = 1;
+      const en = enemies[n++];
+      en.active = true; en.pop = 0; en.flash = 0;
+      en.tier = tier; en.maxHp = TIER_HP[tier]; en.hp = en.maxHp;
+      en.x = xs[i];
+      en.z = zFront + r;
+    }
   }
-  foesAlive = ENEMY_N;
-  panelAlive = true; panelPop = 0; panelHp = PANEL_HITS;
-  panelX = panelXFor(wave); panelZ = 20;
+  foesAlive = n;
+  panelAlive = true;
+  panelHp = PANEL_HITS;
+  panelCrack = 0;
+  panelType = pickPanel(wave);
+  panelX = panelXFor(wave);
+  panelZ = 20;
   panel.visible = true;
   panel.scale.set(1, 1, 1);
-  paintPanelHp();
-  panel.position.set(panelX, 0.85, -panelZ);
+  glassMat.opacity = 0.35;
+  paintCracks(0);
+  paintPanelLabel(panelType.text, panelType.good);
+  panel.position.set(panelX, 0.9, -panelZ);
   hideBanner();
+  syncEnemyDraw();
 }
 function damageShooter(n) {
   if (gameOver || !v09On) return;
@@ -391,16 +486,13 @@ function damageShooter(n) {
 }
 function endWave() {
   if (gameOver) return;
-  for (let i = 0; i < ENEMY_N; i++) {
-    enemies[i].alive = false;
-    enemies[i].pop = 0;
-    enemies[i].mesh.visible = false;
-    enemies[i].tag.visible = false;
-  }
+  for (let i = 0; i < MAX_E; i++) enemies[i].active = false;
+  foesAlive = 0;
   panelAlive = false;
-  if (panelPop <= 0) panel.visible = false;
+  panel.visible = false;
   showBanner('Wave clear', false);
   waveWait = 2;
+  syncEnemyDraw();
 }
 function clearBullets() {
   count = 0;
@@ -417,13 +509,80 @@ function restartV09() {
   spawnWave();
   paintHud();
 }
-function breakPanel() {
+function shatterPanel() {
   panelAlive = false;
-  panelPop = 0.24;
-  if (shooters < 4) shooters++;
+  panel.visible = false;
+  applyPanelOp(panelType.id);
+  for (let i = 0; i < SHARDS; i++) {
+    shardLife[i] = 0.42;
+    shardMeshes[i].visible = true;
+    shardMeshes[i].position.set(panelX + (i - 2.5) * 0.18, 0.95, -panelZ);
+    shardMeshes[i].rotation.z = i * 0.6;
+    shardMeshes[i].material.opacity = 0.6;
+    shardVX[i] = (i - 2.5) * 1.7;
+    shardVY[i] = 1.5;
+    shardVZ[i] = (i % 2 ? 1 : -1) * 0.8;
+  }
   paintHud();
 }
+function updateShards(dt) {
+  for (let i = 0; i < SHARDS; i++) {
+    if (shardLife[i] <= 0) continue;
+    shardLife[i] -= dt;
+    const m = shardMeshes[i];
+    if (shardLife[i] <= 0) { m.visible = false; continue; }
+    m.position.x += shardVX[i] * dt;
+    m.position.y += shardVY[i] * dt;
+    m.position.z += shardVZ[i] * dt;
+    shardVY[i] -= 4.5 * dt;
+    m.rotation.z += dt * 6;
+    m.material.opacity = Math.max(0, shardLife[i] / 0.42) * 0.65;
+  }
+}
+function syncEnemyDraw() {
+  const counts = [0, 0, 0];
+  const digits = [0, 0, 0, 0, 0, 0, 0, 0];
+  const h = window.innerHeight || 932;
+  for (let i = 0; i < MAX_E; i++) {
+    const en = enemies[i];
+    if (!en.active || !v09On) continue;
+    const base = 0.7 + 0.3 * (en.hp / en.maxHp);
+    let sc = en.pop > 0 ? (0.2 + 1.5 * Math.max(0, en.pop / 0.18)) : base;
+    const wob = en.flash > 0 ? Math.sin(time * 36 + i * 1.7) * 0.14 * (en.flash / 0.12) : 0;
+    const mesh = tierMesh[en.tier];
+    const slot = counts[en.tier]++;
+    _dummy.position.set(en.x + wob, TIER_R[en.tier] * sc, -en.z);
+    _dummy.rotation.set(0, 0, wob * 0.8);
+    _dummy.scale.setScalar(sc);
+    _dummy.updateMatrix();
+    mesh.setMatrixAt(slot, _dummy.matrix);
+    _tint.copy(TIER_COLOR[en.tier]).lerp(FLASH_WHITE, en.pop > 0 ? 0.85 : Math.min(1, en.flash / 0.12));
+    mesh.setColorAt(slot, _tint);
+    if (hpNumbers && en.pop <= 0 && en.hp >= 1 && en.hp <= 8) {
+      const px = Math.abs(screenY(0, -en.z, h) - screenY(1, -en.z, h)) || 1;
+      const worldH = Math.min(0.72, Math.max(0.42, 18 / px));
+      const ds = worldH / 0.64;
+      const dslot = digits[en.hp - 1]++;
+      _dummy.position.set(en.x, TIER_R[en.tier] * sc + worldH * 0.55, -en.z + 0.15);
+      _dummy.rotation.set(0, 0, 0);
+      _dummy.scale.set(ds, ds, 1);
+      _dummy.updateMatrix();
+      digitMesh[en.hp - 1].setMatrixAt(dslot, _dummy.matrix);
+    }
+  }
+  for (let t = 0; t < 3; t++) {
+    tierMesh[t].count = counts[t];
+    tierMesh[t].instanceMatrix.needsUpdate = true;
+    if (tierMesh[t].instanceColor) tierMesh[t].instanceColor.needsUpdate = true;
+  }
+  for (let d = 0; d < 8; d++) {
+    digitMesh[d].count = hpNumbers && v09On ? digits[d] : 0;
+    digitMesh[d].instanceMatrix.needsUpdate = true;
+  }
+}
+function syncEnemyTags() { syncEnemyDraw(); }
 function updateV09(dt) {
+  updateShards(dt);
   if (!v09On || gameOver) return;
   if (waveWait > 0) {
     waveWait -= dt;
@@ -432,65 +591,36 @@ function updateV09(dt) {
       spawnWave();
       paintHud();
     }
+    syncEnemyDraw();
     return;
   }
-  for (let i = 0; i < ENEMY_N; i++) {
+  const spd = waveSpeed();
+  for (let i = 0; i < MAX_E; i++) {
     const en = enemies[i];
-    if (!en.alive) continue;
+    if (!en.active) continue;
     if (en.pop > 0) {
       en.pop -= dt;
-      const k = Math.max(0, en.pop / 0.2);
-      en.mesh.scale.setScalar(0.35 + 1.15 * k);
-      en.mesh.material.color.copy(ENEMY_WHITE);
-      en.tag.visible = false;
-      if (en.pop <= 0) {
-        en.alive = false;
-        en.mesh.visible = false;
-      }
+      if (en.pop <= 0) en.active = false;
       continue;
     }
-    en.z -= enemySpeed * dt;
+    en.z -= spd * TIER_SLOW[en.tier] * dt;
+    if (en.flash > 0) en.flash = Math.max(0, en.flash - dt);
     if (en.z <= 0.5) {
-      en.alive = false;
-      en.mesh.visible = false;
-      en.tag.visible = false;
+      en.active = false;
       foesAlive--;
-      damageShooter(5);
-      if (gameOver) return;
-      continue;
+      damageShooter(TIER_LEAK[en.tier]);
+      if (gameOver) { syncEnemyDraw(); return; }
     }
-    const shrink = 0.62 + 0.38 * (en.hp / ENEMY_HP);
-    en.mesh.scale.setScalar(shrink);
-    if (en.flash > 0) {
-      en.flash = Math.max(0, en.flash - dt);
-      en.mesh.material.color.copy(ENEMY_BLUE).lerp(ENEMY_WHITE, en.flash / 0.12);
-    } else en.mesh.material.color.copy(ENEMY_BLUE);
-    en.mesh.position.set(en.x, ENEMY_R * shrink, -en.z);
-    en.tag.visible = hpNumbers;
-    if (hpNumbers) placeHpTag(en, shrink);
   }
-  if (panelPop > 0) {
-    panelPop -= dt;
-    const k = Math.max(0, panelPop / 0.24);
-    panel.visible = k > 0;
-    panel.scale.setScalar(1 + 0.5 * k);
-    panelMat.color.copy(PANEL_BASE).lerp(ENEMY_WHITE, Math.min(1, k + 0.35));
-    panelMat.opacity = 0.25 + 0.7 * k;
-    if (panelPop <= 0) panel.visible = false;
-  } else if (panelAlive) {
-    panelZ -= enemySpeed * dt;
+  if (panelAlive) {
+    panelZ -= spd * dt;
     if (panelZ <= 0.5) {
       panelAlive = false;
       panel.visible = false;
-    } else panel.position.set(panelX, 0.85, -panelZ);
+    } else panel.position.set(panelX, 0.9, -panelZ);
   }
+  syncEnemyDraw();
   if (!gameOver && foesAlive <= 0 && waveWait <= 0) endWave();
-}
-function syncEnemyTags() {
-  for (let i = 0; i < ENEMY_N; i++) {
-    const en = enemies[i];
-    en.tag.visible = hpNumbers && en.alive && en.pop <= 0 && v09On;
-  }
 }
 banner.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
 banner.addEventListener('click', (e) => {
@@ -544,7 +674,7 @@ const TRACK_LIM = CFG.track.width / 2;
 let gateFx = true;
 let m2On = false;
 let v09On = true;
-let enemySpeed = 4;
+let enemySpeed = 5;
 let hpNumbers = false;
 function labelTexture(text) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256;
@@ -773,6 +903,16 @@ const inV09 = document.getElementById('in-v09');
 const inHpNum = document.getElementById('in-hpnum');
 const inEspeed = document.getElementById('in-espeed');
 const outEspeed = document.getElementById('out-espeed');
+const inRamp = document.getElementById('in-ramp');
+const outRamp = document.getElementById('out-ramp');
+const inWneg = document.getElementById('in-wneg');
+const inWdiv = document.getElementById('in-wdiv');
+const inWplus = document.getElementById('in-wplus');
+const inWmul = document.getElementById('in-wmul');
+const outWneg = document.getElementById('out-wneg');
+const outWdiv = document.getElementById('out-wdiv');
+const outWplus = document.getElementById('out-wplus');
+const outWmul = document.getElementById('out-wmul');
 const outSensitivity = document.getElementById('out-sensitivity');
 const outSmoothK = document.getElementById('out-smoothK');
 const outClampX = document.getElementById('out-clampX');
@@ -793,7 +933,7 @@ function persistTune() {
   try {
     localStorage.setItem(TUNE_KEY, JSON.stringify({
       sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx, marker: markerOn, m2: m2On,
-      v09: v09On, hpNumbers, enemySpeed,
+      v09: v09On, hpNumbers, enemySpeed, speedRamp, wNeg, wDiv, wPlus, wMul,
     }));
   } catch (_) {}
 }
@@ -815,6 +955,16 @@ function loadTune() {
   hpNumbers = saved.hpNumbers === true;
   const sp = quantize(saved.enemySpeed, 0.5, 8, 0.1);
   if (sp != null) enemySpeed = sp;
+  const rp = quantize(saved.speedRamp, 0, 1, 0.05);
+  if (rp != null) speedRamp = rp;
+  const wn = quantize(saved.wNeg, 0, 100, 1);
+  const wd = quantize(saved.wDiv, 0, 100, 1);
+  const wp = quantize(saved.wPlus, 0, 100, 1);
+  const wm = quantize(saved.wMul, 0, 100, 1);
+  if (wn != null) wNeg = wn;
+  if (wd != null) wDiv = wd;
+  if (wp != null) wPlus = wp;
+  if (wm != null) wMul = wm;
 }
 function constrainTarget() {
   if (targetX > CFG.clampX || targetX < -CFG.clampX) {
@@ -834,6 +984,12 @@ function syncTuneUi() {
   inHpNum.checked = hpNumbers;
   inEspeed.value = String(enemySpeed);
   outEspeed.textContent = enemySpeed.toFixed(1);
+  inRamp.value = String(speedRamp);
+  outRamp.textContent = speedRamp.toFixed(2);
+  inWneg.value = String(wNeg); outWneg.textContent = String(wNeg);
+  inWdiv.value = String(wDiv); outWdiv.textContent = String(wDiv);
+  inWplus.value = String(wPlus); outWplus.textContent = String(wPlus);
+  inWmul.value = String(wMul); outWmul.textContent = String(wMul);
   outSensitivity.textContent = formatTune(CFG.sensitivity);
   outSmoothK.textContent = formatTune(CFG.smoothK);
   outClampX.textContent = formatTune(CFG.clampX);
@@ -899,6 +1055,26 @@ inEspeed.addEventListener('input', () => {
   outEspeed.textContent = v.toFixed(1);
   persistTune();
 });
+inRamp.addEventListener('input', () => {
+  const v = quantize(inRamp.value, 0, 1, 0.05);
+  if (v == null) return;
+  speedRamp = v;
+  outRamp.textContent = v.toFixed(2);
+  persistTune();
+});
+function bindWeight(input, output, set) {
+  input.addEventListener('input', () => {
+    const v = quantize(input.value, 0, 100, 1);
+    if (v == null) return;
+    set(v);
+    output.textContent = String(v);
+    persistTune();
+  });
+}
+bindWeight(inWneg, outWneg, (v) => { wNeg = v; });
+bindWeight(inWdiv, outWdiv, (v) => { wDiv = v; });
+bindWeight(inWplus, outWplus, (v) => { wPlus = v; });
+bindWeight(inWmul, outWmul, (v) => { wMul = v; });
 inHpNum.addEventListener('change', () => {
   hpNumbers = inHpNum.checked;
   syncEnemyTags();
@@ -934,7 +1110,9 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   markerHold = 0; markerGreen = 0; markerLast = null; markerSum = 0; markerN = 0;
   m2On = false;
   v09On = true;
-  enemySpeed = 4;
+  enemySpeed = 5;
+  speedRamp = 0.15;
+  wNeg = 35; wDiv = 25; wPlus = 25; wMul = 15;
   hpNumbers = false;
   shooterHp = 100;
   shooters = 1;
@@ -1004,7 +1182,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.10\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+    let text = `v0.11\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
   if (v09On) {
     text += `\nwave ${wave}  HP ${shooterHp}\nshooters ${shooters}  pool ${count}`;
     if (markerOn) {
@@ -1067,29 +1245,32 @@ function frame(now) {
     const px = bx[i];
     if (v09On) {
       if (bAge[i] < CFG.bulletLife) {
-        const hitR = ENEMY_R + CFG.bulletRadius;
-        for (let e = 0; e < ENEMY_N; e++) {
+        for (let e = 0; e < MAX_E; e++) {
           const en = enemies[e];
-          if (!en.alive || en.pop > 0) continue;
+          if (!en.active || en.pop > 0) continue;
+          const sc = 0.7 + 0.3 * (en.hp / en.maxHp);
+          const hitR = TIER_R[en.tier] * sc + CFG.bulletRadius;
           if (px < en.x - hitR || px > en.x + hitR) continue;
           if (z1 < en.z - hitR || z0 > en.z + hitR) continue;
           en.hp -= 1;
           en.flash = 0.12;
           if (en.hp <= 0) {
-            en.pop = 0.2;
+            en.pop = 0.18;
             foesAlive--;
-          } else if (hpNumbers) paintEnemyHp(en);
+          }
           bAge[i] = CFG.bulletLife;
           break;
         }
       }
       if (bAge[i] < CFG.bulletLife && panelAlive) {
-        const hw = 0.75, hd = 0.18;
+        const hw = 0.85, hd = 0.2;
         if (px >= panelX - hw && px <= panelX + hw && z1 >= panelZ - hd && z0 <= panelZ + hd) {
           panelHp--;
-          paintPanelHp();
+          const taken = PANEL_HITS - panelHp;
+          const stage = taken >= 7 ? 3 : taken >= 4 ? 2 : taken >= 1 ? 1 : 0;
+          if (stage !== panelCrack) { panelCrack = stage; paintCracks(stage); }
           bAge[i] = CFG.bulletLife;
-          if (panelHp <= 0) breakPanel();
+          if (panelHp <= 0) shatterPanel();
         }
       }
     } else {

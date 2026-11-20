@@ -253,7 +253,7 @@ for (let i = 0; i < MAX_E; i++) {
 }
 
 // Glass upgrade panel. No frame, no hit counter: the label is the operation, cracks show damage.
-const PANEL_HITS = 10;
+const PANEL_HITS_DEFAULT = 20;
 const PANEL_OPS = [
   { id: '-1', text: '-1', good: false },
   { id: 'div2', text: '÷2', good: false },
@@ -295,7 +295,7 @@ const panelFresnel = new THREE.Mesh(new THREE.PlaneGeometry(1.62, 1.18), fresnel
 panelFresnel.position.z = 0.055;
 const panelCracks = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.08), crackMat);
 panelCracks.position.z = 0.06;
-const panelLabel = new THREE.Mesh(new THREE.PlaneGeometry(1.58, 0.92), labelMat);
+const panelLabel = new THREE.Mesh(new THREE.PlaneGeometry(2.37, 1.38), labelMat);
 panelLabel.position.z = 0.07;
 panel.add(panelGlass, panelFresnel, panelCracks, panelLabel);
 panel.visible = false;
@@ -311,10 +311,11 @@ for (let i = 0; i < SHARDS; i++) {
   scene.add(m);
   shardMeshes.push(m);
 }
-let panelAlive = false, panelX = 0, panelZ = 20, panelHp = PANEL_HITS, panelCrack = 0;
+let panelAlive = false, panelX = 0, panelZ = 20, panelHp = PANEL_HITS_DEFAULT, panelCrack = 0;
+let panelHits = PANEL_HITS_DEFAULT, panelMax = PANEL_HITS_DEFAULT;
 let panelType = PANEL_OPS[2];
 let wNeg = 35, wDiv = 25, wPlus = 25, wMul = 15;
-let speedRamp = 0.15;
+let speedRamp = 0.10;
 
 let shooters = 1, shooterHp = 100, wave = 1, waveWait = 0, gameOver = false, hpFlash = 0, foesAlive = 0;
 const banner = document.getElementById('banner');
@@ -356,6 +357,12 @@ function paintPanelLabel(text, good) {
   g.strokeText(text, 256, 140);
   g.fillText(text, 256, 140);
   labelTex.needsUpdate = true;
+}
+function crackStage(taken, maxHits) {
+  if (taken <= 0 || maxHits <= 0) return 0;
+  if (taken >= maxHits * 2 / 3) return 3;
+  if (taken >= maxHits / 3) return 2;
+  return 1;
 }
 function paintCracks(stage) {
   const g = crackCtx;
@@ -414,7 +421,7 @@ function mixAt(w) {
   return { s: 0.85 + (0.60 - 0.85) * t, m: 0.15 + (0.30 - 0.15) * t, l: 0.10 * t };
 }
 function waveSpeed() {
-  return Math.min(8, enemySpeed + speedRamp * Math.max(0, wave - 1));
+  return Math.min(6, enemySpeed + speedRamp * Math.max(0, wave - 1));
 }
 function clearEnemies() {
   for (let i = 0; i < MAX_E; i++) {
@@ -459,7 +466,8 @@ function spawnWave() {
   }
   foesAlive = n;
   panelAlive = true;
-  panelHp = PANEL_HITS;
+  panelMax = Math.max(1, panelHits);
+  panelHp = panelMax;
   panelCrack = 0;
   panelType = pickPanel(wave);
   panelX = panelXFor(wave);
@@ -674,7 +682,7 @@ const TRACK_LIM = CFG.track.width / 2;
 let gateFx = true;
 let m2On = false;
 let v09On = true;
-let enemySpeed = 5;
+let enemySpeed = 4;
 let hpNumbers = false;
 function labelTexture(text) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256;
@@ -891,7 +899,7 @@ toggle.addEventListener('click', (e) => { e.stopPropagation(); hudOn = !hudOn; h
 let fpsFrames = 0, fpsTime = 0, fps = 0, worstMs = 0, worstAcc = 0;
 
 // ---------- Live tune (persisted; defaults stay the Unity values) ----------
-const TUNE_KEY = 'mathblaster-tune';
+const TUNE_KEY = 'mathblaster-tune-v11.1';
 const inSensitivity = document.getElementById('in-sensitivity');
 const inSmoothK = document.getElementById('in-smoothK');
 const inClampX = document.getElementById('in-clampX');
@@ -905,6 +913,8 @@ const inEspeed = document.getElementById('in-espeed');
 const outEspeed = document.getElementById('out-espeed');
 const inRamp = document.getElementById('in-ramp');
 const outRamp = document.getElementById('out-ramp');
+const inPHits = document.getElementById('in-phits');
+const outPHits = document.getElementById('out-phits');
 const inWneg = document.getElementById('in-wneg');
 const inWdiv = document.getElementById('in-wdiv');
 const inWplus = document.getElementById('in-wplus');
@@ -933,7 +943,7 @@ function persistTune() {
   try {
     localStorage.setItem(TUNE_KEY, JSON.stringify({
       sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx, marker: markerOn, m2: m2On,
-      v09: v09On, hpNumbers, enemySpeed, speedRamp, wNeg, wDiv, wPlus, wMul,
+      v09: v09On, hpNumbers, enemySpeed, speedRamp, panelHits, wNeg, wDiv, wPlus, wMul,
     }));
   } catch (_) {}
 }
@@ -957,6 +967,8 @@ function loadTune() {
   if (sp != null) enemySpeed = sp;
   const rp = quantize(saved.speedRamp, 0, 1, 0.05);
   if (rp != null) speedRamp = rp;
+  const ph = quantize(saved.panelHits, 5, 40, 1);
+  if (ph != null) panelHits = ph;
   const wn = quantize(saved.wNeg, 0, 100, 1);
   const wd = quantize(saved.wDiv, 0, 100, 1);
   const wp = quantize(saved.wPlus, 0, 100, 1);
@@ -986,6 +998,8 @@ function syncTuneUi() {
   outEspeed.textContent = enemySpeed.toFixed(1);
   inRamp.value = String(speedRamp);
   outRamp.textContent = speedRamp.toFixed(2);
+  inPHits.value = String(panelHits);
+  outPHits.textContent = String(panelHits);
   inWneg.value = String(wNeg); outWneg.textContent = String(wNeg);
   inWdiv.value = String(wDiv); outWdiv.textContent = String(wDiv);
   inWplus.value = String(wPlus); outWplus.textContent = String(wPlus);
@@ -1062,6 +1076,13 @@ inRamp.addEventListener('input', () => {
   outRamp.textContent = v.toFixed(2);
   persistTune();
 });
+inPHits.addEventListener('input', () => {
+  const v = quantize(inPHits.value, 5, 40, 1);
+  if (v == null) return;
+  panelHits = v;
+  outPHits.textContent = String(v);
+  persistTune();
+});
 function bindWeight(input, output, set) {
   input.addEventListener('input', () => {
     const v = quantize(input.value, 0, 100, 1);
@@ -1110,8 +1131,9 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   markerHold = 0; markerGreen = 0; markerLast = null; markerSum = 0; markerN = 0;
   m2On = false;
   v09On = true;
-  enemySpeed = 5;
-  speedRamp = 0.15;
+  enemySpeed = 4;
+  speedRamp = 0.10;
+  panelHits = PANEL_HITS_DEFAULT;
   wNeg = 35; wDiv = 25; wPlus = 25; wMul = 15;
   hpNumbers = false;
   shooterHp = 100;
@@ -1182,7 +1204,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.11\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+    let text = `v0.11.1\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
   if (v09On) {
     text += `\nwave ${wave}  HP ${shooterHp}\nshooters ${shooters}  pool ${count}`;
     if (markerOn) {
@@ -1266,8 +1288,8 @@ function frame(now) {
         const hw = 0.85, hd = 0.2;
         if (px >= panelX - hw && px <= panelX + hw && z1 >= panelZ - hd && z0 <= panelZ + hd) {
           panelHp--;
-          const taken = PANEL_HITS - panelHp;
-          const stage = taken >= 7 ? 3 : taken >= 4 ? 2 : taken >= 1 ? 1 : 0;
+          const taken = panelMax - panelHp;
+          const stage = crackStage(taken, panelMax);
           if (stage !== panelCrack) { panelCrack = stage; paintCracks(stage); }
           bAge[i] = CFG.bulletLife;
           if (panelHp <= 0) shatterPanel();

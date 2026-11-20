@@ -50,7 +50,7 @@
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="hud">v0.11</div>
+<div id="hud">v0.11.1</div>
 <div id="actions">
   <button id="tune" type="button" aria-expanded="false" aria-controls="tune-panel">TUNE</button>
   <button id="toggle" type="button">FPS</button>
@@ -65,11 +65,14 @@
   <label>Edge clamp <output id="out-clampX">3.5</output>
     <input id="in-clampX" type="range" min="2.5" max="3.5" step="0.1" value="3.5">
   </label>
-  <label>Base speed <output id="out-espeed">5.0</output>
-    <input id="in-espeed" type="range" min="0.5" max="8" step="0.1" value="5">
+  <label>Base speed <output id="out-espeed">4.0</output>
+    <input id="in-espeed" type="range" min="0.5" max="8" step="0.1" value="4">
   </label>
-  <label>Speed ramp <output id="out-ramp">0.15</output>
-    <input id="in-ramp" type="range" min="0" max="1" step="0.05" value="0.15">
+  <label>Speed ramp <output id="out-ramp">0.10</output>
+    <input id="in-ramp" type="range" min="0" max="1" step="0.05" value="0.10">
+  </label>
+  <label>Hits to break <output id="out-phits">20</output>
+    <input id="in-phits" type="range" min="5" max="40" step="1" value="20">
   </label>
   <label>-1 weight <output id="out-wneg">35</output>
     <input id="in-wneg" type="range" min="0" max="100" step="1" value="35">

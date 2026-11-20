@@ -37,6 +37,7 @@ const LABEL_H = 2.25;
 const TARGET_PLANE_PX = 73; // ~40px of ink; digits fill about 55% of the plane
 const _pv = new THREE.Vector3();
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 400);
+const camHome = new THREE.Vector3();
 function safeBottomPx() {
   const el = document.getElementById('safe-bottom');
   return el ? el.offsetHeight : 0;
@@ -55,6 +56,7 @@ function poseCamera(pitch, w, h) {
   camera.aspect = aspect;
   camera.rotation.x = -pitch;
   camera.position.set(0, SIN * RHS1 - COS * RHS2, COS * RHS1 + SIN * RHS2);
+  camHome.copy(camera.position);
   camera.updateMatrixWorld();
   camera.updateProjectionMatrix();
 }
@@ -212,9 +214,56 @@ const TIER_COLOR = [new THREE.Color(0x3d8cff), new THREE.Color(0xffd24a), new TH
 const FLASH_WHITE = new THREE.Color(0xffffff);
 const _dummy = new THREE.Object3D();
 const _tint = new THREE.Color();
-function makeTierMesh(radius, color) {
-  const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(radius, 12, 8),
-    new THREE.MeshLambertMaterial({ color }), MAX_E);
+let animT = 0;
+function mergeBalloonParts(parts) {
+  let vcount = 0, icount = 0;
+  for (let i = 0; i < parts.length; i++) {
+    vcount += parts[i].getAttribute('position').count;
+    icount += parts[i].getIndex().count;
+  }
+  const pos = new Float32Array(vcount * 3);
+  const nrm = new Float32Array(vcount * 3);
+  const idx = new Uint16Array(icount);
+  let vo = 0, io = 0;
+  for (let p = 0; p < parts.length; p++) {
+    const g = parts[p];
+    const pa = g.getAttribute('position').array;
+    const na = g.getAttribute('normal').array;
+    const ia = g.getIndex().array;
+    pos.set(pa, vo * 3);
+    nrm.set(na, vo * 3);
+    for (let i = 0; i < ia.length; i++) idx[io + i] = ia[i] + vo;
+    vo += pa.length / 3;
+    io += ia.length;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  return geo;
+}
+function balloonGeometry() {
+  const body = new THREE.SphereGeometry(1, 14, 11);
+  body.scale(0.92, 1.16, 0.92);
+  body.computeVertexNormals();
+  const knot = new THREE.SphereGeometry(0.22, 7, 6);
+  knot.translate(0, -0.98, 0.26);
+  const string = new THREE.CylinderGeometry(0.04, 0.022, 0.58, 4);
+  string.rotateX(-0.6);
+  string.translate(0, -1.18, 0.46);
+  const geo = mergeBalloonParts([body, knot, string]);
+  body.dispose(); knot.dispose(); string.dispose();
+  return geo;
+}
+const balloonGeo = balloonGeometry();
+function makeTierMesh(color) {
+  const mesh = new THREE.InstancedMesh(balloonGeo, new THREE.MeshPhongMaterial({
+    color,
+    specular: 0xfff4e4,
+    shininess: 30,
+    emissive: color,
+    emissiveIntensity: 0.14,
+  }), MAX_E);
   mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_E * 3), 3);
   mesh.count = 0;
   mesh.frustumCulled = false;
@@ -222,7 +271,7 @@ function makeTierMesh(radius, color) {
   scene.add(mesh);
   return mesh;
 }
-const tierMesh = [makeTierMesh(0.3, 0x3d8cff), makeTierMesh(0.4, 0xffd24a), makeTierMesh(0.55, 0xff4b4b)];
+const tierMesh = [makeTierMesh(0x3d8cff), makeTierMesh(0xffd24a), makeTierMesh(0xff4b4b)];
 function digitTexture(n) {
   const c = document.createElement('canvas');
   c.width = 128; c.height = 160;
@@ -249,7 +298,136 @@ for (let d = 1; d <= 8; d++) {
 }
 const enemies = [];
 for (let i = 0; i < MAX_E; i++) {
-  enemies.push({ active: false, tier: 0, hp: 0, maxHp: 1, x: 0, z: 0, flash: 0, pop: 0 });
+  enemies.push({ active: false, tier: 0, hp: 0, maxHp: 1, x: 0, z: 0, flash: 0, pop: 0, popFrom: 1 });
+}
+
+// Pop confetti. One instanced pool, reused; nothing allocated when a balloon bursts.
+const POP_N = 256;
+const POP_LIFE = 0.5;
+const SHRED_COLOR = TIER_COLOR.map((c) => [c, c.clone().lerp(FLASH_WHITE, 0.4), c.clone().multiplyScalar(0.72)]);
+const popLife = new Float32Array(POP_N);
+const popX = new Float32Array(POP_N), popY = new Float32Array(POP_N), popZ = new Float32Array(POP_N);
+const popVX = new Float32Array(POP_N), popVY = new Float32Array(POP_N), popVZ = new Float32Array(POP_N);
+const popSpin = new Float32Array(POP_N), popRot = new Float32Array(POP_N), popScale = new Float32Array(POP_N);
+const popTier = new Uint8Array(POP_N), popVar = new Uint8Array(POP_N);
+let popCursor = 0, popPeak = 0;
+const shredGeo = new THREE.PlaneGeometry(0.36, 0.2);
+const shredMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const shredMesh = new THREE.InstancedMesh(shredGeo, shredMat, POP_N);
+const SHRED_FADE = new THREE.Color(0x12386f);
+shredMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(POP_N * 3), 3);
+shredMesh.count = 0;
+shredMesh.frustumCulled = false;
+shredMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+shredMesh.renderOrder = 2;
+scene.add(shredMesh);
+const RING_N = 8;
+const ringLife = new Float32Array(RING_N);
+const ringMeshes = [];
+function ringTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.strokeStyle = 'rgba(190, 250, 255, 0.95)';
+  g.lineWidth = 14;
+  g.beginPath();
+  g.arc(64, 64, 48, 0, Math.PI * 2);
+  g.stroke();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const ringMap = ringTexture();
+for (let i = 0; i < RING_N; i++) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ map: ringMap, transparent: true, depthWrite: false, opacity: 0, color: 0xcffbff }));
+  m.visible = false;
+  m.renderOrder = 2;
+  scene.add(m);
+  ringMeshes.push(m);
+}
+let ringCursor = 0;
+let shake = 0;
+function emitRing(x, y, z, big) {
+  const i = ringCursor;
+  ringCursor = (ringCursor + 1) % RING_N;
+  ringLife[i] = 0.2;
+  const m = ringMeshes[i];
+  m.visible = true;
+  m.position.set(x, y, z);
+  m.scale.setScalar(big ? 0.35 : 0.2);
+  m.material.opacity = 0.55;
+  m.userData.big = big ? 1 : 0;
+}
+function emitShreds(x, y, z, tier) {
+  const n = tier === 2 ? 12 : tier === 1 ? 10 : 8;
+  const speed = tier === 2 ? 4.6 : 3.1;
+  const big = tier === 2 ? 1.55 : 1;
+  for (let k = 0; k < n; k++) {
+    const i = popCursor;
+    popCursor = (popCursor + 1) % POP_N;
+    const ang = (k / n) * Math.PI * 2 + k * 0.41;
+    popLife[i] = POP_LIFE;
+    popX[i] = x; popY[i] = y; popZ[i] = z;
+    popVX[i] = Math.cos(ang) * speed * (0.65 + (k % 4) * 0.14);
+    popVY[i] = (1.15 + (k % 3) * 0.45) * (tier === 2 ? 1.3 : 1);
+    popVZ[i] = Math.sin(ang) * speed * 0.8;
+    popSpin[i] = (k % 2 ? 1 : -1) * (5 + (k % 3));
+    popRot[i] = k * 0.7;
+    popScale[i] = big * (0.75 + (k % 3) * 0.22);
+    popTier[i] = tier;
+    popVar[i] = k % 3;
+  }
+}
+function burstBalloon(en) {
+  const s = TIER_R[en.tier] * (en.popFrom || 1);
+  const y = s * 1.25;
+  emitShreds(en.x, y, -en.z, en.tier);
+  emitRing(en.x, y, -en.z + 0.12, en.tier === 2);
+  if (en.tier === 2) shake = 0.1;
+  playPop(en.tier);
+}
+function updatePops(dt) {
+  let slot = 0;
+  for (let i = 0; i < POP_N; i++) {
+    if (popLife[i] <= 0) continue;
+    popLife[i] -= dt;
+    if (popLife[i] <= 0) continue;
+    popX[i] += popVX[i] * dt;
+    popY[i] += popVY[i] * dt;
+    popZ[i] += popVZ[i] * dt;
+    popVY[i] -= 7.5 * dt;
+    popRot[i] += popSpin[i] * dt;
+    const fade = Math.max(0, popLife[i] / POP_LIFE);
+    const sc = popScale[i] * (fade < 0.3 ? 0.4 + fade / 0.3 : 1);
+    _dummy.position.set(popX[i], popY[i], popZ[i]);
+    _dummy.rotation.set(0, 0, popRot[i]);
+    _dummy.scale.set(sc, sc * 0.7, 1);
+    _dummy.updateMatrix();
+    shredMesh.setMatrixAt(slot, _dummy.matrix);
+    _tint.copy(SHRED_COLOR[popTier[i]][popVar[i]]).lerp(SHRED_FADE, fade < 0.3 ? 1 - fade / 0.3 : 0);
+    shredMesh.setColorAt(slot, _tint);
+    slot++;
+  }
+  if (slot > popPeak) popPeak = slot;
+  shredMesh.count = slot;
+  shredMesh.instanceMatrix.needsUpdate = true;
+  if (shredMesh.instanceColor) shredMesh.instanceColor.needsUpdate = true;
+  for (let i = 0; i < RING_N; i++) {
+    if (ringLife[i] <= 0) continue;
+    ringLife[i] -= dt;
+    const m = ringMeshes[i];
+    if (ringLife[i] <= 0) { m.visible = false; continue; }
+    const u = 1 - ringLife[i] / 0.2;
+    const base = m.userData.big ? 2.4 : 1.5;
+    m.scale.setScalar(0.35 + u * base);
+    m.material.opacity = (1 - u) * 0.7;
+  }
+}
+function clearPops() {
+  popLife.fill(0);
+  shredMesh.count = 0;
+  for (let i = 0; i < RING_N; i++) { ringLife[i] = 0; ringMeshes[i].visible = false; }
 }
 
 // Glass upgrade panel. No frame, no hit counter: the label is the operation, cracks show damage.
@@ -514,10 +692,12 @@ function restartV09() {
   waveWait = 0;
   hpFlash = 0;
   clearBullets();
+  clearPops();
   spawnWave();
   paintHud();
 }
 function shatterPanel() {
+  playGlass();
   panelAlive = false;
   panel.visible = false;
   applyPanelOp(panelType.id);
@@ -554,24 +734,40 @@ function syncEnemyDraw() {
   for (let i = 0; i < MAX_E; i++) {
     const en = enemies[i];
     if (!en.active || !v09On) continue;
-    const base = 0.7 + 0.3 * (en.hp / en.maxHp);
-    let sc = en.pop > 0 ? (0.2 + 1.5 * Math.max(0, en.pop / 0.18)) : base;
-    const wob = en.flash > 0 ? Math.sin(time * 36 + i * 1.7) * 0.14 * (en.flash / 0.12) : 0;
+    const shrink = en.pop > 0 ? (en.popFrom || 1) : (0.7 + 0.3 * (en.hp / en.maxHp));
+    let sx = 1, sy = 1;
+    if (en.pop > 0) {
+      const u = 1 - Math.max(en.pop, 0) / 0.08;
+      if (u < 0.4) {
+        const k = u / 0.4;
+        sx = 1 + 0.38 * k;
+        sy = 1 - 0.4 * k;
+      } else {
+        const k = (u - 0.4) / 0.6;
+        sx = 1.38 - 0.5 * k;
+        sy = 0.6 + 0.95 * k;
+      }
+    }
+    const bob = en.pop > 0 ? 0 : Math.sin(animT * 2.3 + i * 1.31) * 0.045;
+    const sway = en.pop > 0 ? 0 : Math.sin(animT * 1.55 + i * 0.87) * 0.03;
+    const tilt = en.pop > 0 ? 0 : Math.sin(animT * 1.55 + i * 0.87) * 0.1;
+    const wob = en.flash > 0 ? Math.sin(animT * 36 + i * 1.7) * 0.14 * (en.flash / 0.12) : 0;
     const mesh = tierMesh[en.tier];
     const slot = counts[en.tier]++;
-    _dummy.position.set(en.x + wob, TIER_R[en.tier] * sc, -en.z);
-    _dummy.rotation.set(0, 0, wob * 0.8);
-    _dummy.scale.setScalar(sc);
+    const r = TIER_R[en.tier] * shrink;
+    _dummy.position.set(en.x + wob + sway, r * 1.22 + bob, -en.z);
+    _dummy.rotation.set(0, 0, wob * 0.8 + tilt);
+    _dummy.scale.set(r * sx, r * sy, r * sx);
     _dummy.updateMatrix();
     mesh.setMatrixAt(slot, _dummy.matrix);
-    _tint.copy(TIER_COLOR[en.tier]).lerp(FLASH_WHITE, en.pop > 0 ? 0.85 : Math.min(1, en.flash / 0.12));
+    _tint.copy(TIER_COLOR[en.tier]).lerp(FLASH_WHITE, en.pop > 0 ? 0.55 : Math.min(1, en.flash / 0.12));
     mesh.setColorAt(slot, _tint);
     if (hpNumbers && en.pop <= 0 && en.hp >= 1 && en.hp <= 8) {
       const px = Math.abs(screenY(0, -en.z, h) - screenY(1, -en.z, h)) || 1;
       const worldH = Math.min(0.72, Math.max(0.42, 18 / px));
       const ds = worldH / 0.64;
       const dslot = digits[en.hp - 1]++;
-      _dummy.position.set(en.x, TIER_R[en.tier] * sc + worldH * 0.55, -en.z + 0.15);
+      _dummy.position.set(en.x, r * 2.15 + worldH * 0.45, -en.z + 0.15);
       _dummy.rotation.set(0, 0, 0);
       _dummy.scale.set(ds, ds, 1);
       _dummy.updateMatrix();
@@ -589,9 +785,25 @@ function syncEnemyDraw() {
   }
 }
 function syncEnemyTags() { syncEnemyDraw(); }
+function tickBalloonPops(dt) {
+  for (let i = 0; i < MAX_E; i++) {
+    const en = enemies[i];
+    if (!en.active || en.pop <= 0) continue;
+    en.pop -= dt;
+    if (en.pop <= 0) {
+      burstBalloon(en);
+      en.active = false;
+      foesAlive--;
+    }
+  }
+}
 function updateV09(dt) {
+  animT += dt;
   updateShards(dt);
-  if (!v09On || gameOver) return;
+  updatePops(dt);
+  if (!v09On) return;
+  tickBalloonPops(dt);
+  if (gameOver) { syncEnemyDraw(); return; }
   if (waveWait > 0) {
     waveWait -= dt;
     if (waveWait <= 0) {
@@ -606,11 +818,7 @@ function updateV09(dt) {
   for (let i = 0; i < MAX_E; i++) {
     const en = enemies[i];
     if (!en.active) continue;
-    if (en.pop > 0) {
-      en.pop -= dt;
-      if (en.pop <= 0) en.active = false;
-      continue;
-    }
+    if (en.pop > 0) continue;
     en.z -= spd * TIER_SLOW[en.tier] * dt;
     if (en.flash > 0) en.flash = Math.max(0, en.flash - dt);
     if (en.z <= 0.5) {
@@ -684,6 +892,78 @@ let m2On = false;
 let v09On = true;
 let enemySpeed = 4;
 let hpNumbers = false;
+let soundOn = true;
+
+// Synthesised pops. No sample files. The context stays suspended until the first tap (iOS).
+let audioCtx = null;
+let audioVoices = 0;
+let popQueueTime = 0;
+let glassBuf = null;
+function unlockAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  if (!audioCtx) {
+    try { audioCtx = new AC(); } catch (_) { return; }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function playPop(tier) {
+  if (!soundOn || !audioCtx || audioCtx.state !== 'running') return;
+  if (audioVoices >= 8) return;
+  const now = audioCtx.currentTime;
+  const t = Math.max(now, popQueueTime);
+  if (t - now > 0.1) return;
+  popQueueTime = t + 0.028;
+  audioVoices++;
+  const baseHz = tier === 2 ? 210 : tier === 1 ? 340 : 480;
+  const freq = baseHz * (0.9 + Math.random() * 0.18);
+  const osc = audioCtx.createOscillator();
+  const click = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(freq, t);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(60, freq * 0.5), t + 0.07);
+  click.type = 'triangle';
+  click.frequency.setValueAtTime(freq * 1.8, t);
+  click.frequency.exponentialRampToValueAtTime(Math.max(80, freq * 0.7), t + 0.04);
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(0.16, t + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+  osc.connect(gain);
+  click.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(t); click.start(t);
+  osc.stop(t + 0.1); click.stop(t + 0.05);
+  osc.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
+}
+function playGlass() {
+  if (!soundOn || !audioCtx || audioCtx.state !== 'running') return;
+  if (audioVoices >= 8) return;
+  const now = audioCtx.currentTime;
+  if (!glassBuf) {
+    const len = Math.floor(audioCtx.sampleRate * 0.2);
+    glassBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = glassBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.4);
+  }
+  audioVoices++;
+  const src = audioCtx.createBufferSource();
+  src.buffer = glassBuf;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.setValueAtTime(1800, now);
+  filter.frequency.exponentialRampToValueAtTime(400, now + 0.16);
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0.2, now);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioCtx.destination);
+  src.start(now);
+  src.stop(now + 0.2);
+  src.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
+}
+document.addEventListener('pointerdown', () => unlockAudio(), true);
 function labelTexture(text) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256;
   const g = c.getContext('2d');
@@ -844,6 +1124,7 @@ let touchSmooth = false;          // optional pointer-x average; default OFF
 const moveSamples = [];
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
+  unlockAudio();
   if (activeId !== null) return; // one steering finger at a time
   activeId = e.pointerId;
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
@@ -909,6 +1190,7 @@ const inMarker = document.getElementById('in-marker');
 const inM2 = document.getElementById('in-m2');
 const inV09 = document.getElementById('in-v09');
 const inHpNum = document.getElementById('in-hpnum');
+const inSound = document.getElementById('in-sound');
 const inEspeed = document.getElementById('in-espeed');
 const outEspeed = document.getElementById('out-espeed');
 const inRamp = document.getElementById('in-ramp');
@@ -943,7 +1225,7 @@ function persistTune() {
   try {
     localStorage.setItem(TUNE_KEY, JSON.stringify({
       sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx, marker: markerOn, m2: m2On,
-      v09: v09On, hpNumbers, enemySpeed, speedRamp, panelHits, wNeg, wDiv, wPlus, wMul,
+      v09: v09On, hpNumbers, sound: soundOn, enemySpeed, speedRamp, panelHits, wNeg, wDiv, wPlus, wMul,
     }));
   } catch (_) {}
 }
@@ -963,6 +1245,7 @@ function loadTune() {
   if (typeof saved.m2 === 'boolean') m2On = saved.m2;
   if (typeof saved.v09 === 'boolean') v09On = saved.v09;
   hpNumbers = saved.hpNumbers === true;
+  if (typeof saved.sound === 'boolean') soundOn = saved.sound;
   const sp = quantize(saved.enemySpeed, 0.5, 8, 0.1);
   if (sp != null) enemySpeed = sp;
   const rp = quantize(saved.speedRamp, 0, 1, 0.05);
@@ -994,6 +1277,7 @@ function syncTuneUi() {
   inM2.checked = m2On;
   inV09.checked = v09On;
   inHpNum.checked = hpNumbers;
+  inSound.checked = soundOn;
   inEspeed.value = String(enemySpeed);
   outEspeed.textContent = enemySpeed.toFixed(1);
   inRamp.value = String(speedRamp);
@@ -1101,6 +1385,11 @@ inHpNum.addEventListener('change', () => {
   syncEnemyTags();
   persistTune();
 });
+inSound.addEventListener('change', () => {
+  soundOn = inSound.checked;
+  if (soundOn) unlockAudio();
+  persistTune();
+});
 inV09.addEventListener('change', () => {
   v09On = inV09.checked;
   gameOver = false;
@@ -1136,6 +1425,7 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   panelHits = PANEL_HITS_DEFAULT;
   wNeg = 35; wDiv = 25; wPlus = 25; wMul = 15;
   hpNumbers = false;
+  soundOn = true;
   shooterHp = 100;
   shooters = 1;
   wave = 1;
@@ -1204,7 +1494,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.11.1\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+    let text = `v0.12\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
   if (v09On) {
     text += `\nwave ${wave}  HP ${shooterHp}\nshooters ${shooters}  pool ${count}`;
     if (markerOn) {
@@ -1277,8 +1567,8 @@ function frame(now) {
           en.hp -= 1;
           en.flash = 0.12;
           if (en.hp <= 0) {
-            en.pop = 0.18;
-            foesAlive--;
+            en.pop = 0.08;
+            en.popFrom = 0.7 + 0.3 * (1 / en.maxHp);
           }
           bAge[i] = CFG.bulletLife;
           break;
@@ -1365,6 +1655,13 @@ function frame(now) {
   bulletMesh.instanceMatrix.needsUpdate = true;
 
   layoutCannons();
+  if (shake > 0) shake = Math.max(0, shake - dt);
+  camera.position.copy(camHome);
+  if (shake > 0) {
+    const a = shake / 0.1;
+    camera.position.x += Math.sin(time * 68) * 0.07 * a;
+    camera.position.y += Math.cos(time * 51) * 0.045 * a;
+  }
   renderer.render(scene, camera);
 
   // FPS readout

@@ -301,17 +301,17 @@ for (let i = 0; i < MAX_E; i++) {
   enemies.push({ active: false, tier: 0, hp: 0, maxHp: 1, x: 0, z: 0, flash: 0, pop: 0, popFrom: 1 });
 }
 
-// Pop confetti. One instanced pool, reused; nothing allocated when a balloon bursts.
+// Thin rubber strips. One instanced pool, reused; nothing allocated when a balloon bursts.
 const POP_N = 256;
-const POP_LIFE = 0.5;
-const SHRED_COLOR = TIER_COLOR.map((c) => [c, c.clone().lerp(FLASH_WHITE, 0.4), c.clone().multiplyScalar(0.72)]);
+const POP_LIFE = 0.3;
+const SHRED_COLOR = TIER_COLOR.map((c) => [c, c.clone().multiplyScalar(0.78), c.clone().multiplyScalar(0.9)]);
 const popLife = new Float32Array(POP_N);
 const popX = new Float32Array(POP_N), popY = new Float32Array(POP_N), popZ = new Float32Array(POP_N);
 const popVX = new Float32Array(POP_N), popVY = new Float32Array(POP_N), popVZ = new Float32Array(POP_N);
 const popSpin = new Float32Array(POP_N), popRot = new Float32Array(POP_N), popScale = new Float32Array(POP_N);
 const popTier = new Uint8Array(POP_N), popVar = new Uint8Array(POP_N);
 let popCursor = 0, popPeak = 0;
-const shredGeo = new THREE.PlaneGeometry(0.36, 0.2);
+const shredGeo = new THREE.PlaneGeometry(0.5, 0.07);
 const shredMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 const shredMesh = new THREE.InstancedMesh(shredGeo, shredMat, POP_N);
 const SHRED_FADE = new THREE.Color(0x12386f);
@@ -360,30 +360,69 @@ function emitRing(x, y, z, big) {
   m.userData.big = big ? 1 : 0;
 }
 function emitShreds(x, y, z, tier) {
-  const n = tier === 2 ? 12 : tier === 1 ? 10 : 8;
-  const speed = tier === 2 ? 4.6 : 3.1;
-  const big = tier === 2 ? 1.55 : 1;
+  const n = tier === 2 ? 8 : tier === 1 ? 6 : 5;
+  const speed = tier === 2 ? 7.2 : 5.5;
+  const big = tier === 2 ? 1.15 : tier === 1 ? 0.85 : 0.65;
   for (let k = 0; k < n; k++) {
     const i = popCursor;
     popCursor = (popCursor + 1) % POP_N;
-    const ang = (k / n) * Math.PI * 2 + k * 0.41;
+    const ang = (k / n) * Math.PI * 2 + k * 0.37;
     popLife[i] = POP_LIFE;
     popX[i] = x; popY[i] = y; popZ[i] = z;
-    popVX[i] = Math.cos(ang) * speed * (0.65 + (k % 4) * 0.14);
-    popVY[i] = (1.15 + (k % 3) * 0.45) * (tier === 2 ? 1.3 : 1);
-    popVZ[i] = Math.sin(ang) * speed * 0.8;
-    popSpin[i] = (k % 2 ? 1 : -1) * (5 + (k % 3));
-    popRot[i] = k * 0.7;
-    popScale[i] = big * (0.75 + (k % 3) * 0.22);
+    popVX[i] = Math.cos(ang) * speed * (0.85 + (k % 3) * 0.12);
+    popVY[i] = (0.35 + (k % 3) * 0.4) * (tier === 2 ? 1.2 : 1);
+    popVZ[i] = Math.sin(ang) * speed * 0.9;
+    popSpin[i] = (k % 2 ? 1 : -1) * (8 + (k % 3) * 2);
+    popRot[i] = k * 0.9;
+    popScale[i] = big;
     popTier[i] = tier;
     popVar[i] = k % 3;
   }
+}
+const FLASH_N = 8;
+const flashLife = new Float32Array(FLASH_N);
+const flashRad = new Float32Array(FLASH_N);
+const flashMeshes = [];
+function whiteRingTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.strokeStyle = 'rgba(255,255,255,0.98)';
+  g.lineWidth = 16;
+  g.beginPath();
+  g.arc(64, 64, 46, 0, Math.PI * 2);
+  g.stroke();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const whiteRingMap = whiteRingTexture();
+for (let i = 0; i < FLASH_N; i++) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ map: whiteRingMap, transparent: true, depthWrite: false, opacity: 0, color: 0xffffff }));
+  m.visible = false;
+  m.renderOrder = 3;
+  scene.add(m);
+  flashMeshes.push(m);
+}
+let flashCursor = 0;
+function emitFlash(x, y, z, radius) {
+  const i = flashCursor;
+  flashCursor = (flashCursor + 1) % FLASH_N;
+  flashLife[i] = 0.1;
+  flashRad[i] = Math.max(0.25, radius);
+  const m = flashMeshes[i];
+  m.visible = true;
+  m.position.set(x, y, z);
+  m.scale.setScalar(flashRad[i] * 2.1);
+  m.material.opacity = 0.95;
 }
 function burstBalloon(en) {
   const s = TIER_R[en.tier] * (en.popFrom || 1);
   const y = s * 1.25;
   emitShreds(en.x, y, -en.z, en.tier);
   emitRing(en.x, y, -en.z + 0.12, en.tier === 2);
+  emitFlash(en.x, y, -en.z + 0.18, s);
   if (en.tier === 2) shake = 0.1;
   playPop(en.tier);
 }
@@ -396,13 +435,13 @@ function updatePops(dt) {
     popX[i] += popVX[i] * dt;
     popY[i] += popVY[i] * dt;
     popZ[i] += popVZ[i] * dt;
-    popVY[i] -= 7.5 * dt;
+    popVY[i] -= 16 * dt;
     popRot[i] += popSpin[i] * dt;
     const fade = Math.max(0, popLife[i] / POP_LIFE);
-    const sc = popScale[i] * (fade < 0.3 ? 0.4 + fade / 0.3 : 1);
+    const sc = popScale[i] * (0.45 + 0.55 * fade);
     _dummy.position.set(popX[i], popY[i], popZ[i]);
     _dummy.rotation.set(0, 0, popRot[i]);
-    _dummy.scale.set(sc, sc * 0.7, 1);
+    _dummy.scale.set(sc, sc, 1);
     _dummy.updateMatrix();
     shredMesh.setMatrixAt(slot, _dummy.matrix);
     _tint.copy(SHRED_COLOR[popTier[i]][popVar[i]]).lerp(SHRED_FADE, fade < 0.3 ? 1 - fade / 0.3 : 0);
@@ -423,11 +462,21 @@ function updatePops(dt) {
     m.scale.setScalar(0.35 + u * base);
     m.material.opacity = (1 - u) * 0.7;
   }
+  for (let i = 0; i < FLASH_N; i++) {
+    if (flashLife[i] <= 0) continue;
+    flashLife[i] -= dt;
+    const m = flashMeshes[i];
+    if (flashLife[i] <= 0) { m.visible = false; continue; }
+    const u = 1 - flashLife[i] / 0.1;
+    m.scale.setScalar(flashRad[i] * (2.1 + u * 1.8));
+    m.material.opacity = (1 - u) * 0.92;
+  }
 }
 function clearPops() {
   popLife.fill(0);
   shredMesh.count = 0;
   for (let i = 0; i < RING_N; i++) { ringLife[i] = 0; ringMeshes[i].visible = false; }
+  for (let i = 0; i < FLASH_N; i++) { flashLife[i] = 0; flashMeshes[i].visible = false; }
 }
 
 // Glass upgrade panel. No frame, no hit counter: the label is the operation, cracks show damage.
@@ -896,48 +945,80 @@ let soundOn = true;
 
 // Synthesised pops. No sample files. The context stays suspended until the first tap (iOS).
 let audioCtx = null;
+let masterBus = null;
 let audioVoices = 0;
 let popQueueTime = 0;
 let glassBuf = null;
+let snapBuf = null;
 function unlockAudio() {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
   if (!audioCtx) {
     try { audioCtx = new AC(); } catch (_) { return; }
   }
+  if (!masterBus) {
+    const comp = audioCtx.createDynamicsCompressor();
+    comp.threshold.value = -12;
+    comp.knee.value = 8;
+    comp.ratio.value = 8;
+    comp.attack.value = 0.002;
+    comp.release.value = 0.06;
+    comp.connect(audioCtx.destination);
+    masterBus = comp;
+  }
   if (audioCtx.state === 'suspended') audioCtx.resume();
 }
+function ensureSnap() {
+  if (snapBuf || !audioCtx) return;
+  const dur = 0.09;
+  const len = Math.floor(audioCtx.sampleRate * dur);
+  snapBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const data = snapBuf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.6);
+}
 function playPop(tier) {
-  if (!soundOn || !audioCtx || audioCtx.state !== 'running') return;
+  if (!soundOn || !audioCtx || !masterBus || audioCtx.state !== 'running') return;
   if (audioVoices >= 8) return;
   const now = audioCtx.currentTime;
   const t = Math.max(now, popQueueTime);
   if (t - now > 0.1) return;
   popQueueTime = t + 0.028;
+  ensureSnap();
   audioVoices++;
-  const baseHz = tier === 2 ? 210 : tier === 1 ? 340 : 480;
-  const freq = baseHz * (0.9 + Math.random() * 0.18);
+  const pitch = 0.9 + Math.random() * 0.2;
+  const center = (tier === 2 ? 2200 : tier === 1 ? 3000 : 3800) * pitch;
+  const src = audioCtx.createBufferSource();
+  src.buffer = snapBuf;
+  src.playbackRate.setValueAtTime(pitch, t);
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(Math.min(5000, Math.max(1800, center)), t);
+  bp.Q.setValueAtTime(0.85, t);
+  const nGain = audioCtx.createGain();
+  nGain.gain.setValueAtTime(0.0001, t);
+  nGain.gain.exponentialRampToValueAtTime(0.36, t + 0.004);
+  nGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
+  src.connect(bp);
+  bp.connect(nGain);
+  nGain.connect(masterBus);
   const osc = audioCtx.createOscillator();
-  const click = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
   osc.type = 'sine';
-  osc.frequency.setValueAtTime(freq, t);
-  osc.frequency.exponentialRampToValueAtTime(Math.max(60, freq * 0.5), t + 0.07);
-  click.type = 'triangle';
-  click.frequency.setValueAtTime(freq * 1.8, t);
-  click.frequency.exponentialRampToValueAtTime(Math.max(80, freq * 0.7), t + 0.04);
-  gain.gain.setValueAtTime(0.0001, t);
-  gain.gain.exponentialRampToValueAtTime(0.16, t + 0.008);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
-  osc.connect(gain);
-  click.connect(gain);
-  gain.connect(audioCtx.destination);
-  osc.start(t); click.start(t);
-  osc.stop(t + 0.1); click.stop(t + 0.05);
-  osc.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
+  osc.frequency.setValueAtTime(Math.min(5000, center * 1.25), t);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(900, center * 0.7), t + 0.035);
+  const oGain = audioCtx.createGain();
+  oGain.gain.setValueAtTime(0.0001, t);
+  oGain.gain.exponentialRampToValueAtTime(0.12, t + 0.003);
+  oGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+  osc.connect(oGain);
+  oGain.connect(masterBus);
+  src.start(t);
+  osc.start(t);
+  src.stop(t + 0.1);
+  osc.stop(t + 0.045);
+  src.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
 }
 function playGlass() {
-  if (!soundOn || !audioCtx || audioCtx.state !== 'running') return;
+  if (!soundOn || !audioCtx || !masterBus || audioCtx.state !== 'running') return;
   if (audioVoices >= 8) return;
   const now = audioCtx.currentTime;
   if (!glassBuf) {
@@ -954,11 +1035,11 @@ function playGlass() {
   filter.frequency.setValueAtTime(1800, now);
   filter.frequency.exponentialRampToValueAtTime(400, now + 0.16);
   const gain = audioCtx.createGain();
-  gain.gain.setValueAtTime(0.2, now);
+  gain.gain.setValueAtTime(0.12, now);
   gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
   src.connect(filter);
   filter.connect(gain);
-  gain.connect(audioCtx.destination);
+  gain.connect(masterBus);
   src.start(now);
   src.stop(now + 0.2);
   src.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
@@ -1494,7 +1575,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.12\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+    let text = `v0.12.1\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
   if (v09On) {
     text += `\nwave ${wave}  HP ${shooterHp}\nshooters ${shooters}  pool ${count}`;
     if (markerOn) {

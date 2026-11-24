@@ -1026,13 +1026,16 @@ let audioVoices = 0;
 let popQueueTime = 0;
 let glassBuf = null;
 let snapBuf = null;
-function unlockAudio() {
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return;
-  if (!audioCtx) {
-    try { audioCtx = new AC(); } catch (_) { return; }
-  }
-  if (!masterBus) {
+let silentBuf = null;
+const audioStateEl = document.getElementById('audio-state');
+function paintAudioState() {
+  if (!audioStateEl) return;
+  const st = !audioCtx ? 'none' : (audioCtx.state || 'unknown');
+  audioStateEl.textContent = 'Audio: ' + st;
+}
+function ensureBus() {
+  if (masterBus || !audioCtx) return;
+  try {
     const comp = audioCtx.createDynamicsCompressor();
     comp.threshold.value = -12;
     comp.knee.value = 8;
@@ -1041,8 +1044,46 @@ function unlockAudio() {
     comp.release.value = 0.06;
     comp.connect(audioCtx.destination);
     masterBus = comp;
+  } catch (_) {
+    masterBus = audioCtx.destination;
   }
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function playSilence() {
+  if (!audioCtx) return;
+  try {
+    if (!silentBuf) {
+      const rate = audioCtx.sampleRate || 44100;
+      const len = Math.max(1, Math.floor(rate * 0.05));
+      silentBuf = audioCtx.createBuffer(1, len, rate);
+    }
+    const src = audioCtx.createBufferSource();
+    src.buffer = silentBuf;
+    src.connect(audioCtx.destination);
+    if (masterBus && masterBus !== audioCtx.destination) src.connect(masterBus);
+    src.start(0);
+  } catch (_) {}
+}
+function unlockAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) { paintAudioState(); return; }
+  try {
+    if (!audioCtx) {
+      audioCtx = new AC();
+      audioCtx.addEventListener('statechange', () => {
+        paintAudioState();
+        const st = audioCtx.state;
+        if (st === 'suspended' || st === 'interrupted') audioCtx.resume().catch(() => {});
+      });
+    }
+    ensureBus();
+    const st = audioCtx.state;
+    if (st === 'suspended' || st === 'interrupted') {
+      const pending = audioCtx.resume();
+      if (pending && pending.catch) pending.catch(() => {});
+    }
+    playSilence();
+  } catch (_) {}
+  paintAudioState();
 }
 function ensureSnap() {
   if (snapBuf || !audioCtx) return;
@@ -1163,7 +1204,13 @@ function playGlass() {
   src.stop(now + 0.2);
   src.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
 }
-document.addEventListener('pointerdown', () => unlockAudio(), true);
+function onAudioGesture() { unlockAudio(); }
+document.addEventListener('pointerup', onAudioGesture, true);
+document.addEventListener('touchend', onAudioGesture, true);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') unlockAudio();
+});
+paintAudioState();
 function labelTexture(text) {
   const c = document.createElement('canvas'); c.width = 512; c.height = 256;
   const g = c.getContext('2d');
@@ -1329,7 +1376,6 @@ let touchSmooth = false;          // optional pointer-x average; default OFF
 const moveSamples = [];
 canvas.addEventListener('pointerdown', (e) => {
   e.preventDefault();
-  unlockAudio();
   if (activeId !== null) return; // one steering finger at a time
   activeId = e.pointerId;
   try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
@@ -1718,7 +1764,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.13\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+    let text = `v0.13.1\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
   if (v09On) {
     text += `\nwave ${wave}  HP ${shooterHp}\nL${cannonLevel} x${shooters}  pool ${count}`;
     if (markerOn) {
@@ -1735,6 +1781,7 @@ function paintHud() {
     }
   }
   hud.textContent = text;
+  paintAudioState();
   const clearNow = wallClearPx();
   if (Math.abs(clearNow - fittedClear) > 1) {
     fittedClear = clearNow;

@@ -165,9 +165,17 @@ function makeCannon() {
     new THREE.MeshBasicMaterial({ color: 0x8ef6ff }));
   muzzle.position.set(0, 0.32, -0.58);
   g.add(body, barrel, muzzle);
+  g.userData.bodyMat = body.material;
+  g.userData.muzzleMat = muzzle.material;
   scene.add(g);
   return g;
 }
+const LEVEL_SCALE = [1, 1.15, 1.3];
+const LEVEL_BOLT = [1, 1.25, 1.6];
+const LEVEL_DMG = [1, 2, 4];
+const LEVEL_BODY = [0xf7f9ff, 0xfff3cc, 0xf6e4ff];
+const LEVEL_MUZZLE = [0x8ef6ff, 0xffcc33, 0xd946ef];
+const LEVEL_BOLT_COLOR = [0xb8f7ff, 0xffd56a, 0xe879f9].map((hex) => new THREE.Color(hex));
 const cannons = [makeCannon(), makeCannon(), makeCannon(), makeCannon()];
 for (let i = 1; i < 4; i++) cannons[i].visible = false;
 
@@ -544,7 +552,8 @@ let panelType = PANEL_OPS[2];
 let wNeg = 35, wDiv = 25, wPlus = 25, wMul = 15;
 let speedRamp = 0.10;
 
-let shooters = 1, shooterHp = 100, wave = 1, waveWait = 0, gameOver = false, hpFlash = 0, foesAlive = 0;
+let shooters = 1, cannonLevel = 1, startLevel = 1, cannonFlash = 0;
+let shooterHp = 100, wave = 1, waveWait = 0, gameOver = false, hpFlash = 0, foesAlive = 0;
 const banner = document.getElementById('banner');
 function showBanner(text, over) {
   banner.textContent = text;
@@ -611,11 +620,62 @@ function paintCracks(stage) {
   }
   crackTex.needsUpdate = true;
 }
+function resolveCannons(level, count, op) {
+  let n = count;
+  if (op === '+1') n += 1;
+  else if (op === '-1') n -= 1;
+  else if (op === 'x2') n *= 2;
+  else if (op === 'div2') n = Math.floor(n / 2);
+  let lv = level;
+  if (n < 1) {
+    if (lv > 1) return { level: lv - 1, count: 4, dir: -1 };
+    return { level: 1, count: 1, dir: 0 };
+  }
+  let dir = 0;
+  while (n > 4 && lv < 3) {
+    n -= 4;
+    lv += 1;
+    dir = 1;
+  }
+  if (lv >= 3 && n > 4) n = 4;
+  return { level: lv, count: n, dir };
+}
+(function checkCannonLevels() {
+  const cases = [
+    [1, 4, '+1', 2, 1, 1],
+    [1, 4, 'x2', 2, 4, 1],
+    [1, 3, 'x2', 2, 2, 1],
+    [1, 1, '-1', 1, 1, 0],
+    [1, 1, 'div2', 1, 1, 0],
+    [2, 1, '-1', 1, 4, -1],
+    [2, 1, 'div2', 1, 4, -1],
+    [3, 4, '+1', 3, 4, 0],
+    [2, 4, 'x2', 3, 4, 1],
+    [3, 1, '-1', 2, 4, -1],
+    [2, 2, '+1', 2, 3, 0],
+    [1, 2, '+1', 1, 3, 0],
+  ];
+  for (let i = 0; i < cases.length; i++) {
+    const c = cases[i];
+    const r = resolveCannons(c[0], c[1], c[2]);
+    if (r.level !== c[3] || r.count !== c[4] || r.dir !== c[5]) {
+      console.error('cannon level check failed', c[0], c[1], c[2], r);
+    }
+  }
+})();
 function applyPanelOp(id) {
-  if (id === '+1') shooters = Math.min(4, shooters + 1);
-  else if (id === '-1') shooters = Math.max(1, shooters - 1);
-  else if (id === 'x2') shooters = Math.min(4, shooters * 2);
-  else if (id === 'div2') shooters = Math.max(1, Math.floor(shooters / 2));
+  const next = resolveCannons(cannonLevel, shooters, id);
+  cannonLevel = next.level;
+  shooters = next.count;
+  if (next.dir > 0) {
+    cannonFlash = 0.18;
+    showLevelToast('LEVEL ' + cannonLevel);
+    try { playLevelChime(true); } catch (_) {}
+  } else if (next.dir < 0) {
+    cannonFlash = 0.18;
+    showLevelToast('LEVEL DOWN');
+    try { playLevelChime(false); } catch (_) {}
+  }
 }
 function cannonXs(n, center) {
   const half = CANNON_W / 2 + (n - 1) * CANNON_GAP / 2;
@@ -627,11 +687,19 @@ function cannonXs(n, center) {
 }
 function layoutCannons() {
   const n = v09On ? shooters : 1;
+  const lv = v09On ? cannonLevel : 1;
+  const s = LEVEL_SCALE[lv - 1];
+  const flashK = cannonFlash > 0 ? cannonFlash / 0.18 : 0;
   const xs = cannonXs(n, x);
   for (let i = 0; i < 4; i++) {
     const on = i < n;
     cannons[i].visible = on;
-    if (on) cannons[i].position.set(xs[i], 0, 0);
+    if (!on) continue;
+    cannons[i].position.set(xs[i], 0, 0);
+    cannons[i].scale.setScalar(s);
+    cannons[i].userData.bodyMat.color.setHex(LEVEL_BODY[lv - 1]);
+    cannons[i].userData.muzzleMat.color.setHex(LEVEL_MUZZLE[lv - 1]);
+    if (flashK > 0) cannons[i].userData.muzzleMat.color.lerp(FLASH_WHITE, flashK);
   }
   const cx = xs[0] === undefined ? x : (xs[0] + xs[xs.length - 1]) / 2;
   hpBar.visible = v09On && !gameOver;
@@ -737,6 +805,7 @@ function restartV09() {
   gameOver = false;
   shooterHp = 100;
   shooters = 1;
+  cannonLevel = startLevel;
   wave = 1;
   waveWait = 0;
   hpFlash = 0;
@@ -892,6 +961,13 @@ banner.addEventListener('click', (e) => {
   e.stopPropagation();
   if (gameOver) restartV09();
 });
+const levelToast = document.getElementById('level-toast');
+let toastLeft = 0;
+function showLevelToast(text) {
+  levelToast.textContent = text;
+  levelToast.hidden = false;
+  toastLeft = 0.8;
+}
 
 // 1-unit lineup marker (Unity z=6). Off until the TUNE checkbox is enabled.
 const MARKER_IDLE = 0xfff4c2, MARKER_OK = 0x3dff7a;
@@ -1016,6 +1092,49 @@ function playPop(tier) {
   src.stop(t + 0.1);
   osc.stop(t + 0.045);
   src.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
+}
+function playLevelChime(up) {
+  if (!soundOn || !audioCtx || !masterBus || audioCtx.state !== 'running') return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const harm = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  const harmGain = audioCtx.createGain();
+  if (up) {
+    osc.type = 'sine';
+    harm.type = 'sine';
+    osc.frequency.setValueAtTime(523, now);
+    osc.frequency.exponentialRampToValueAtTime(1046, now + 0.16);
+    harm.frequency.setValueAtTime(784, now);
+    harm.frequency.exponentialRampToValueAtTime(1568, now + 0.16);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.28, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+    harmGain.gain.setValueAtTime(0.0001, now);
+    harmGain.gain.exponentialRampToValueAtTime(0.12, now + 0.02);
+    harmGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+  } else {
+    osc.type = 'triangle';
+    harm.type = 'sine';
+    osc.frequency.setValueAtTime(240, now);
+    osc.frequency.exponentialRampToValueAtTime(110, now + 0.14);
+    harm.frequency.setValueAtTime(180, now);
+    harm.frequency.exponentialRampToValueAtTime(90, now + 0.14);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.16, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+    harmGain.gain.setValueAtTime(0.0001, now);
+    harmGain.gain.exponentialRampToValueAtTime(0.06, now + 0.012);
+    harmGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+  }
+  osc.connect(gain);
+  harm.connect(harmGain);
+  gain.connect(masterBus);
+  harmGain.connect(masterBus);
+  osc.start(now);
+  harm.start(now);
+  osc.stop(now + (up ? 0.24 : 0.18));
+  harm.stop(now + (up ? 0.24 : 0.18));
 }
 function playGlass() {
   if (!soundOn || !audioCtx || !masterBus || audioCtx.state !== 'running') return;
@@ -1179,21 +1298,26 @@ paintHits(0);
 const N = CFG.maxBullets;
 const bx = new Float32Array(N), bz = new Float32Array(N), bAge = new Float32Array(N);
 const bPassed = new Uint8Array(N);   // bit flags: gate 0 passed
+const bLvl = new Uint8Array(N);
 let count = 0;                       // live bullets are indices [0, count)
 const bulletMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 0.08, 0.4),
-  new THREE.MeshBasicMaterial({ color: 0xb8f7ff }), N);
+  new THREE.MeshBasicMaterial({ color: 0xffffff }), N);
+bulletMesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(N * 3), 3);
 bulletMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 bulletMesh.count = 0;
 bulletMesh.frustumCulled = false;
 scene.add(bulletMesh);
 const BULLET_Y = 0.5;
-function spawn(x, z, age, passed) {
+function spawn(x, z, age, passed, level) {
   if (count >= N) return; // pool exhausted: drop (never allocate)
-  bx[count] = x; bz[count] = z; bAge[count] = age; bPassed[count] = passed; count++;
+  bx[count] = x; bz[count] = z; bAge[count] = age; bPassed[count] = passed;
+  bLvl[count] = level || 1;
+  count++;
 }
 function kill(i) { // swap-remove
   count--;
   bx[i] = bx[count]; bz[i] = bz[count]; bAge[i] = bAge[count]; bPassed[i] = bPassed[count];
+  bLvl[i] = bLvl[count];
 }
 applyM2();
 
@@ -1272,6 +1396,8 @@ const inM2 = document.getElementById('in-m2');
 const inV09 = document.getElementById('in-v09');
 const inHpNum = document.getElementById('in-hpnum');
 const inSound = document.getElementById('in-sound');
+const inSlevel = document.getElementById('in-slevel');
+const outSlevel = document.getElementById('out-slevel');
 const inEspeed = document.getElementById('in-espeed');
 const outEspeed = document.getElementById('out-espeed');
 const inRamp = document.getElementById('in-ramp');
@@ -1306,7 +1432,7 @@ function persistTune() {
   try {
     localStorage.setItem(TUNE_KEY, JSON.stringify({
       sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx, marker: markerOn, m2: m2On,
-      v09: v09On, hpNumbers, sound: soundOn, enemySpeed, speedRamp, panelHits, wNeg, wDiv, wPlus, wMul,
+      v09: v09On, hpNumbers, sound: soundOn, startLevel, enemySpeed, speedRamp, panelHits, wNeg, wDiv, wPlus, wMul,
     }));
   } catch (_) {}
 }
@@ -1327,6 +1453,9 @@ function loadTune() {
   if (typeof saved.v09 === 'boolean') v09On = saved.v09;
   hpNumbers = saved.hpNumbers === true;
   if (typeof saved.sound === 'boolean') soundOn = saved.sound;
+  const sl = quantize(saved.startLevel, 1, 3, 1);
+  if (sl != null) startLevel = sl;
+  cannonLevel = startLevel;
   const sp = quantize(saved.enemySpeed, 0.5, 8, 0.1);
   if (sp != null) enemySpeed = sp;
   const rp = quantize(saved.speedRamp, 0, 1, 0.05);
@@ -1359,6 +1488,8 @@ function syncTuneUi() {
   inV09.checked = v09On;
   inHpNum.checked = hpNumbers;
   inSound.checked = soundOn;
+  inSlevel.value = String(startLevel);
+  outSlevel.textContent = String(startLevel);
   inEspeed.value = String(enemySpeed);
   outEspeed.textContent = enemySpeed.toFixed(1);
   inRamp.value = String(speedRamp);
@@ -1471,19 +1602,29 @@ inSound.addEventListener('change', () => {
   if (soundOn) unlockAudio();
   persistTune();
 });
+inSlevel.addEventListener('input', () => {
+  const v = quantize(inSlevel.value, 1, 3, 1);
+  if (v == null) return;
+  startLevel = v;
+  cannonLevel = v;
+  outSlevel.textContent = String(v);
+  persistTune();
+  paintHud();
+});
 inV09.addEventListener('change', () => {
   v09On = inV09.checked;
   gameOver = false;
   waveWait = 0;
   hideBanner();
   if (v09On) {
-    shooterHp = 100; shooters = 1; wave = 1; hpFlash = 0;
+    shooterHp = 100; shooters = 1; cannonLevel = startLevel; wave = 1; hpFlash = 0;
     wall.visible = false; hitLabel.visible = false;
     spawnWave();
   } else {
     clearEnemies();
     wall.visible = true; hitLabel.visible = true;
     shooters = 1;
+    cannonLevel = startLevel;
   }
   applyM2();
   paintHud();
@@ -1507,6 +1648,8 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   wNeg = 35; wDiv = 25; wPlus = 25; wMul = 15;
   hpNumbers = false;
   soundOn = true;
+  startLevel = 1;
+  cannonLevel = 1;
   shooterHp = 100;
   shooters = 1;
   wave = 1;
@@ -1575,9 +1718,9 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.12.1\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+    let text = `v0.13\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
   if (v09On) {
-    text += `\nwave ${wave}  HP ${shooterHp}\nshooters ${shooters}  pool ${count}`;
+    text += `\nwave ${wave}  HP ${shooterHp}\nL${cannonLevel} x${shooters}  pool ${count}`;
     if (markerOn) {
       const last = markerLast == null ? '—' : markerLast.toFixed(2) + 's';
       const avg = markerN ? (markerSum / markerN).toFixed(2) + 's' : '—';
@@ -1610,6 +1753,11 @@ function frame(now) {
   unitLabel.position.x = x;
   updateMarker(dt);
   if (hpFlash > 0) hpFlash = Math.max(0, hpFlash - dt);
+  if (cannonFlash > 0) cannonFlash = Math.max(0, cannonFlash - dt);
+  if (toastLeft > 0) {
+    toastLeft -= dt;
+    if (toastLeft <= 0) levelToast.hidden = true;
+  }
   updateV09(dt);
 
   // Auto-fire (accumulator keeps exact 8/s regardless of frame rate)
@@ -1622,7 +1770,7 @@ function frame(now) {
       const n = v09On ? shooters : 1;
       const xs = cannonXs(n, x);
       for (let s = 0; s < n; s++) {
-        spawn(xs[s], CFG.muzzleZ + CFG.bulletSpeed * fireAcc, fireAcc, 0);
+        spawn(xs[s], CFG.muzzleZ + CFG.bulletSpeed * fireAcc, fireAcc, 0, v09On ? cannonLevel : 1);
       }
       shots++;
     }
@@ -1645,7 +1793,7 @@ function frame(now) {
           const hitR = TIER_R[en.tier] * sc + CFG.bulletRadius;
           if (px < en.x - hitR || px > en.x + hitR) continue;
           if (z1 < en.z - hitR || z0 > en.z + hitR) continue;
-          en.hp -= 1;
+          en.hp -= LEVEL_DMG[(bLvl[i] || 1) - 1] || 1;
           en.flash = 0.12;
           if (en.hp <= 0) {
             en.pop = 0.08;
@@ -1683,7 +1831,7 @@ function frame(now) {
           let cx = px + copySign * GATE_SPREAD * k;
           if (cx > TRACK_LIM) cx = TRACK_LIM;
           else if (cx < -TRACK_LIM) cx = -TRACK_LIM;
-          spawn(cx, z1, age, passed);
+          spawn(cx, z1, age, passed, bLvl[i] || 1);
           copySign = -copySign;
         }
         punchGate(g);
@@ -1729,11 +1877,18 @@ function frame(now) {
 
   // Upload instance matrices
   for (let i = 0; i < count; i++) {
-    m4.makeTranslation(bx[i], BULLET_Y, -bz[i]);
-    bulletMesh.setMatrixAt(i, m4);
+    const lv = bLvl[i] || 1;
+    const thick = LEVEL_BOLT[lv - 1];
+    _dummy.position.set(bx[i], BULLET_Y, -bz[i]);
+    _dummy.rotation.set(0, 0, 0);
+    _dummy.scale.set(thick, thick, 1);
+    _dummy.updateMatrix();
+    bulletMesh.setMatrixAt(i, _dummy.matrix);
+    bulletMesh.setColorAt(i, LEVEL_BOLT_COLOR[lv - 1]);
   }
   bulletMesh.count = count;
   bulletMesh.instanceMatrix.needsUpdate = true;
+  if (bulletMesh.instanceColor) bulletMesh.instanceColor.needsUpdate = true;
 
   layoutCannons();
   if (shake > 0) shake = Math.max(0, shake - dt);

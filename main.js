@@ -1018,15 +1018,17 @@ let v09On = true;
 let enemySpeed = 4;
 let hpNumbers = false;
 let soundOn = true;
+let popVol = 1, chimeVol = 1;
 
 // Synthesised pops. No sample files. The context stays suspended until the first tap (iOS).
 let audioCtx = null;
 let masterBus = null;
 let audioVoices = 0;
 let popQueueTime = 0;
-let glassBuf = null;
-let snapBuf = null;
 let silentBuf = null;
+let chimeNoise = null;
+const puffNoise = [null, null, null];
+let chimeAt = 0;
 const audioStateEl = document.getElementById('audio-state');
 function paintAudioState() {
   if (!audioStateEl) return;
@@ -1085,14 +1087,25 @@ function unlockAudio() {
   } catch (_) {}
   paintAudioState();
 }
-function ensureSnap() {
-  if (snapBuf || !audioCtx) return;
-  const dur = 0.09;
-  const len = Math.floor(audioCtx.sampleRate * dur);
-  snapBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
-  const data = snapBuf.getChannelData(0);
-  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.6);
+function noiseBuffer(dur, power) {
+  const rate = audioCtx.sampleRate || 44100;
+  const len = Math.max(1, Math.floor(rate * dur));
+  const buf = audioCtx.createBuffer(1, len, rate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, power);
+  return buf;
 }
+function rampGain(param, t, peak, attack, end) {
+  if (!(peak > 0.0001)) { param.setValueAtTime(0, t); return; }
+  param.setValueAtTime(0.0001, t);
+  param.exponentialRampToValueAtTime(peak, t + attack);
+  param.exponentialRampToValueAtTime(0.0001, t + end);
+}
+const BLOOP = [
+  { f0: 700, f1: 250, dur: 0.12, peak: 0.42, puff: 0.10, puffPeak: 0.11 },
+  { f0: 520, f1: 180, dur: 0.14, peak: 0.46, puff: 0.11, puffPeak: 0.12 },
+  { f0: 380, f1: 120, dur: 0.18, peak: 0.50, puff: 0.13, puffPeak: 0.14 },
+];
 function playPop(tier) {
   if (!soundOn || !audioCtx || !masterBus || audioCtx.state !== 'running') return;
   if (audioVoices >= 8) return;
@@ -1100,39 +1113,34 @@ function playPop(tier) {
   const t = Math.max(now, popQueueTime);
   if (t - now > 0.1) return;
   popQueueTime = t + 0.028;
-  ensureSnap();
-  audioVoices++;
+  const spec = BLOOP[tier] || BLOOP[0];
   const pitch = 0.9 + Math.random() * 0.2;
-  const center = (tier === 2 ? 2200 : tier === 1 ? 3000 : 3800) * pitch;
-  const src = audioCtx.createBufferSource();
-  src.buffer = snapBuf;
-  src.playbackRate.setValueAtTime(pitch, t);
-  const bp = audioCtx.createBiquadFilter();
-  bp.type = 'bandpass';
-  bp.frequency.setValueAtTime(Math.min(5000, Math.max(1800, center)), t);
-  bp.Q.setValueAtTime(0.85, t);
-  const nGain = audioCtx.createGain();
-  nGain.gain.setValueAtTime(0.0001, t);
-  nGain.gain.exponentialRampToValueAtTime(0.36, t + 0.004);
-  nGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.09);
-  src.connect(bp);
-  bp.connect(nGain);
-  nGain.connect(masterBus);
+  if (!puffNoise[tier]) puffNoise[tier] = noiseBuffer(spec.puff, 1.2);
+  audioVoices++;
   const osc = audioCtx.createOscillator();
   osc.type = 'sine';
-  osc.frequency.setValueAtTime(Math.min(5000, center * 1.25), t);
-  osc.frequency.exponentialRampToValueAtTime(Math.max(900, center * 0.7), t + 0.035);
+  osc.frequency.setValueAtTime(spec.f0 * pitch, t);
+  osc.frequency.exponentialRampToValueAtTime(spec.f1 * pitch, t + spec.dur);
   const oGain = audioCtx.createGain();
-  oGain.gain.setValueAtTime(0.0001, t);
-  oGain.gain.exponentialRampToValueAtTime(0.12, t + 0.003);
-  oGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+  rampGain(oGain.gain, t, spec.peak * popVol, 0.008, spec.dur);
   osc.connect(oGain);
   oGain.connect(masterBus);
-  src.start(t);
   osc.start(t);
-  src.stop(t + 0.1);
-  osc.stop(t + 0.045);
-  src.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
+  osc.stop(t + spec.dur + 0.02);
+  const src = audioCtx.createBufferSource();
+  src.buffer = puffNoise[tier];
+  const lp = audioCtx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(1200 * pitch, t);
+  lp.Q.setValueAtTime(0.707, t);
+  const nGain = audioCtx.createGain();
+  rampGain(nGain.gain, t, spec.puffPeak * popVol, 0.006, spec.puff);
+  src.connect(lp);
+  lp.connect(nGain);
+  nGain.connect(masterBus);
+  src.start(t);
+  src.stop(t + spec.puff + 0.02);
+  osc.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
 }
 function playLevelChime(up) {
   if (!soundOn || !audioCtx || !masterBus || audioCtx.state !== 'running') return;
@@ -1177,32 +1185,54 @@ function playLevelChime(up) {
   osc.stop(now + (up ? 0.24 : 0.18));
   harm.stop(now + (up ? 0.24 : 0.18));
 }
+const CHIME_PARTIALS = [
+  { f: 523, peak: 0.090, decay: 0.45 },
+  { f: 1052, peak: 0.045, decay: 0.35 },
+  { f: 1443, peak: 0.020, decay: 0.28 },
+];
 function playGlass() {
   if (!soundOn || !audioCtx || !masterBus || audioCtx.state !== 'running') return;
   if (audioVoices >= 8) return;
   const now = audioCtx.currentTime;
-  if (!glassBuf) {
-    const len = Math.floor(audioCtx.sampleRate * 0.2);
-    glassBuf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
-    const data = glassBuf.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 1.4);
-  }
+  if (now < chimeAt) return;
+  chimeAt = now + 0.4;
+  if (!chimeNoise) chimeNoise = noiseBuffer(0.08, 1.8);
   audioVoices++;
   const src = audioCtx.createBufferSource();
-  src.buffer = glassBuf;
-  const filter = audioCtx.createBiquadFilter();
-  filter.type = 'highpass';
-  filter.frequency.setValueAtTime(1800, now);
-  filter.frequency.exponentialRampToValueAtTime(400, now + 0.16);
-  const gain = audioCtx.createGain();
-  gain.gain.setValueAtTime(0.12, now);
-  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-  src.connect(filter);
-  filter.connect(gain);
-  gain.connect(masterBus);
+  src.buffer = chimeNoise;
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.setValueAtTime(1500, now);
+  bp.Q.setValueAtTime(0.8, now);
+  const lp = audioCtx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.setValueAtTime(2200, now);
+  lp.Q.setValueAtTime(0.707, now);
+  const nGain = audioCtx.createGain();
+  rampGain(nGain.gain, now, 0.028 * chimeVol, 0.010, 0.08);
+  src.connect(bp);
+  bp.connect(lp);
+  lp.connect(nGain);
+  nGain.connect(masterBus);
   src.start(now);
-  src.stop(now + 0.2);
-  src.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
+  src.stop(now + 0.10);
+  let lead = null;
+  for (let i = 0; i < CHIME_PARTIALS.length; i++) {
+    const p = CHIME_PARTIALS[i];
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(p.f, now);
+    osc.frequency.exponentialRampToValueAtTime(p.f * 0.97, now + p.decay);
+    const gain = audioCtx.createGain();
+    rampGain(gain.gain, now, p.peak * chimeVol, 0.006, p.decay);
+    osc.connect(gain);
+    gain.connect(masterBus);
+    osc.start(now);
+    const stopAt = i === 0 ? 0.50 : p.decay + 0.02;
+    osc.stop(now + stopAt);
+    if (i === 0) lead = osc;
+  }
+  lead.onended = () => { audioVoices = Math.max(0, audioVoices - 1); };
 }
 function onAudioGesture() { unlockAudio(); }
 document.addEventListener('pointerup', onAudioGesture, true);
@@ -1444,6 +1474,10 @@ const inHpNum = document.getElementById('in-hpnum');
 const inSound = document.getElementById('in-sound');
 const inSlevel = document.getElementById('in-slevel');
 const outSlevel = document.getElementById('out-slevel');
+const inPopVol = document.getElementById('in-popvol');
+const outPopVol = document.getElementById('out-popvol');
+const inChimeVol = document.getElementById('in-chimevol');
+const outChimeVol = document.getElementById('out-chimevol');
 const inEspeed = document.getElementById('in-espeed');
 const outEspeed = document.getElementById('out-espeed');
 const inRamp = document.getElementById('in-ramp');
@@ -1478,7 +1512,7 @@ function persistTune() {
   try {
     localStorage.setItem(TUNE_KEY, JSON.stringify({
       sensitivity: CFG.sensitivity, smoothK: CFG.smoothK, clampX: CFG.clampX, touchSmooth, gateFx, marker: markerOn, m2: m2On,
-      v09: v09On, hpNumbers, sound: soundOn, startLevel, enemySpeed, speedRamp, panelHits, wNeg, wDiv, wPlus, wMul,
+      v09: v09On, hpNumbers, sound: soundOn, popVol, chimeVol, startLevel, enemySpeed, speedRamp, panelHits, wNeg, wDiv, wPlus, wMul,
     }));
   } catch (_) {}
 }
@@ -1499,6 +1533,10 @@ function loadTune() {
   if (typeof saved.v09 === 'boolean') v09On = saved.v09;
   hpNumbers = saved.hpNumbers === true;
   if (typeof saved.sound === 'boolean') soundOn = saved.sound;
+  const pv = quantize(saved.popVol, 0, 2, 0.1);
+  const cv = quantize(saved.chimeVol, 0, 2, 0.1);
+  if (pv != null) popVol = pv;
+  if (cv != null) chimeVol = cv;
   const sl = quantize(saved.startLevel, 1, 3, 1);
   if (sl != null) startLevel = sl;
   cannonLevel = startLevel;
@@ -1534,6 +1572,10 @@ function syncTuneUi() {
   inV09.checked = v09On;
   inHpNum.checked = hpNumbers;
   inSound.checked = soundOn;
+  inPopVol.value = String(popVol);
+  outPopVol.textContent = popVol.toFixed(1);
+  inChimeVol.value = String(chimeVol);
+  outChimeVol.textContent = chimeVol.toFixed(1);
   inSlevel.value = String(startLevel);
   outSlevel.textContent = String(startLevel);
   inEspeed.value = String(enemySpeed);
@@ -1648,6 +1690,20 @@ inSound.addEventListener('change', () => {
   if (soundOn) unlockAudio();
   persistTune();
 });
+inPopVol.addEventListener('input', () => {
+  const v = quantize(inPopVol.value, 0, 2, 0.1);
+  if (v == null) return;
+  popVol = v;
+  outPopVol.textContent = v.toFixed(1);
+  persistTune();
+});
+inChimeVol.addEventListener('input', () => {
+  const v = quantize(inChimeVol.value, 0, 2, 0.1);
+  if (v == null) return;
+  chimeVol = v;
+  outChimeVol.textContent = v.toFixed(1);
+  persistTune();
+});
 inSlevel.addEventListener('input', () => {
   const v = quantize(inSlevel.value, 1, 3, 1);
   if (v == null) return;
@@ -1694,6 +1750,8 @@ document.getElementById('tune-reset').addEventListener('click', (e) => {
   wNeg = 35; wDiv = 25; wPlus = 25; wMul = 15;
   hpNumbers = false;
   soundOn = true;
+  popVol = 1;
+  chimeVol = 1;
   startLevel = 1;
   cannonLevel = 1;
   shooterHp = 100;
@@ -1764,7 +1822,7 @@ function resetHits() {
 }
 function paintHud() {
   if (!hudOn) return;
-    let text = `v0.13.1\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
+    let text = `v0.14\nFPS ${fps.toFixed(0)}  worst ${worstMs.toFixed(1)}ms`;
   if (v09On) {
     text += `\nwave ${wave}  HP ${shooterHp}\nL${cannonLevel} x${shooters}  pool ${count}`;
     if (markerOn) {
